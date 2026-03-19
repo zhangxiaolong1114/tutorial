@@ -5,8 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.api import auth
+from app.core.database import engine, Base
 
 settings = get_settings()
+
+# 创建数据库表
+Base.metadata.create_all(bind=engine)
 
 # 创建 FastAPI 应用实例
 app = FastAPI(
@@ -25,6 +30,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 注册路由
+app.include_router(auth.router)
 
 
 @app.get("/")

@@ -21,19 +21,29 @@
 
 ---
 
-### 🔄 Phase 2: 用户系统
-| 任务 | 优先级 | 预估时间 | 状态 |
-|------|--------|---------|------|
-| 2.1 用户模型 (User Model) | P0 | 1h | ⏳ |
-| 2.2 注册/登录 API | P0 | 2h | ⏳ |
-| 2.3 JWT 认证中间件 | P0 | 1h | ⏳ |
-| 2.4 前端登录/注册页面联调 | P0 | 2h | ⏳ |
-| 2.5 用户状态管理 (Pinia) | P1 | 1h | ⏳ |
+### ✅ Phase 2: 用户系统 (已完成)
+| 任务 | 优先级 | 状态 | 备注 |
+|------|--------|------|------|
+| 2.1 用户模型 (User Model) | P0 | ✅ | 含 username, email, password |
+| 2.2 注册/登录 API | P0 | ✅ | JWT Token + OAuth2 |
+| 2.3 JWT 认证中间件 | P0 | ✅ | 保护需要登录的接口 |
+| 2.4 前端登录/注册页面联调 | P0 | ✅ | 含表单验证 |
+| 2.5 用户状态管理 (Pinia) | P1 | ✅ | 持久化登录状态 |
+| 2.6 邮箱验证码 | P0 | ✅ | 注册/新设备登录需验证 |
+| 2.7 多设备登录支持 | P1 | ✅ | 信任设备列表 |
+| 2.8 忘记密码 | P1 | ✅ | 邮箱验证重置密码 |
 
 **技术决策:**
 - 密码加密: bcrypt
 - Token: JWT (HS256)
 - Token 有效期: 30 分钟
+- 邮箱服务: Office 365 (smtp.partner.outlook.cn)
+- 设备指纹: 浏览器特征生成唯一标识
+
+**登录流程:**
+1. 新设备: 邮箱+密码 → 需要验证码 → 验证成功 → 加入信任列表
+2. 已信任设备: 邮箱+密码 → 直接登录
+3. 多端登录: 多个设备各自验证后都可直接登录
 
 ---
 
@@ -128,7 +138,7 @@ tutorial/
 │   ├── app/
 │   │   ├── api/          # API 路由
 │   │   ├── core/         # 配置、数据库
-│   │   ├── models/       # 数据模型
+│   │   ├── models/       # 数据模型 (User, UserDevice)
 │   │   └── services/     # 业务逻辑
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -139,6 +149,7 @@ tutorial/
 │   │   ├── i18n/         # 国际化
 │   │   ├── router/       # 路由
 │   │   ├── stores/       # Pinia Store
+│   │   ├── utils/        # 工具 (device.ts)
 │   │   └── views/        # 页面
 │   ├── Dockerfile
 │   └── package.json
@@ -147,17 +158,32 @@ tutorial/
 
 ---
 
+## API 接口列表
+
+### 认证相关
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| /auth/register | POST | 用户注册（需验证码）|
+| /auth/login | POST | 用户登录 |
+| /auth/verify-login | POST | 验证码登录（新设备）|
+| /auth/send-verification-code | POST | 发送验证码 |
+| /auth/reset-password | POST | 重置密码 |
+| /auth/me | GET | 获取当前用户信息 |
+
+---
+
 ## 下一步行动
 
-**当前决策:**
-1. 继续 Phase 2 用户系统
-2. 跳过用户系统，先做 Phase 3 核心生成 (快速验证)
-3. 先做仿真系统原型 (验证核心差异化功能)
+**Phase 3 准备:**
+1. 配置 AI 模型 API Key
+2. 设计文档数据结构
+3. 实现文档生成 API
+4. 联调前端生成页面
 
 **待确认:**
-- AI 模型 API Key 配置
-- 数据库使用 SQLite 还是 PostgreSQL
-- 是否立即开始 Phase 2
+- AI 模型选择（Kimi / Claude / GPT-4）
+- 文档存储格式（JSON 结构）
+- 是否立即开始 Phase 3
 
 ---
 

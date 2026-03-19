@@ -29,9 +29,12 @@
           </div>
         </div>
         
-        <span class="text-sm text-gray-600">{{ $t('nav.welcome') }}, 用户</span>
+        <!-- 显示真实用户名 -->
+        <span class="text-sm text-gray-600">{{ $t('nav.welcome') }}, {{ displayName }}</span>
+        
+        <!-- 退出登录按钮 -->
         <button 
-          @click="logout"
+          @click="handleLogout"
           class="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
         >
           {{ $t('nav.logout') }}
@@ -45,9 +48,11 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 const { locale } = useI18n()
+const authStore = useAuthStore()
 
 const showLangMenu = ref(false)
 
@@ -60,13 +65,20 @@ const currentLangLabel = computed(() => {
   return languages.find(l => l.code === locale.value)?.label || '中文'
 })
 
+// 显示真实用户名或默认值
+const displayName = computed(() => {
+  return authStore.user?.username || authStore.user?.email || '用户'
+})
+
 const switchLang = (code: string) => {
   locale.value = code
   showLangMenu.value = false
   localStorage.setItem('locale', code)
 }
 
-const logout = () => {
+// 退出登录 - 清除状态并跳转
+const handleLogout = () => {
+  authStore.logout()
   router.push('/login')
 }
 

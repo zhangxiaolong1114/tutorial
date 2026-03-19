@@ -6,11 +6,21 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
+import { useAuthStore } from './stores/auth'
 
-const app = createApp(App)
+async function initApp() {
+  const app = createApp(App)
 
-app.use(createPinia())
-app.use(router)
-app.use(i18n)
+  app.use(createPinia())
 
-app.mount('#app')
+  // 初始化 auth store（恢复登录状态）
+  const authStore = useAuthStore()
+  await authStore.init()
+
+  app.use(router)
+  app.use(i18n)
+
+  app.mount('#app')
+}
+
+initApp()
