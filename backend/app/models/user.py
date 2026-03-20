@@ -1,12 +1,16 @@
 """
 用户模型定义
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Index
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 
 from app.core.database import Base
+
+
+def get_utc_now():
+    """获取当前 UTC 时间"""
+    return datetime.now(timezone.utc)
 
 
 class User(Base):
@@ -27,8 +31,8 @@ class User(Base):
     # 关联设备（多设备登录）
     devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
     
-    created_at = Column(DateTime, default=func.now(), nullable=False)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(DateTime, default=get_utc_now, nullable=False)
+    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
     
     # 显式创建 email 唯一索引
     __table_args__ = (

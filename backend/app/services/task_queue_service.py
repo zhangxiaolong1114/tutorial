@@ -4,7 +4,7 @@
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, Dict, Any
 from sqlalchemy.orm import Session
 
@@ -226,11 +226,11 @@ class TaskQueueService:
         generated_sections = []
         
         for section in sections:
+            section_id = section.get("id", "")
+            section_title = section.get("title", "")
+            section_content = section.get("content", [])
+            
             try:
-                section_id = section.get("id", "")
-                section_title = section.get("title", "")
-                section_content = section.get("content", [])
-                
                 # 仿真章节生成仿真代码
                 if section_id == "simulation" or "仿真" in section_title:
                     simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
@@ -248,17 +248,28 @@ class TaskQueueService:
                         knowledge_point=outline.knowledge_point
                     )
                 
+                # 检查返回的内容是否包含失败标记
+                has_error = '内容生成失败' in html_content or '仿真代码生成失败' in html_content
+                
                 html_contents.append(f"<section id='{section_id}'>\n{html_content}\n</section>")
                 generated_sections.append({
                     "id": section_id,
                     "title": section_title,
-                    "generated": True
+                    "generated": not has_error,
+                    "error": "AI生成返回失败内容" if has_error else None
                 })
+                
+                if has_error:
+                    logger.warning(f"Section {section_id} returned error content")
+                    
             except Exception as e:
-                logger.error(f"Failed to generate section {section.get('id')}: {e}")
+                logger.error(f"Failed to generate section {section_id}: {e}")
+                # 即使异常也要添加失败内容到 html_contents
+                error_content = f'<div class="warning"><strong>内容生成失败</strong><p>章节：{section_title}</p><p>错误：{str(e)[:200]}</p></div>'
+                html_contents.append(f"<section id='{section_id}'>\n{error_content}\n</section>")
                 generated_sections.append({
-                    "id": section.get("id"),
-                    "title": section.get("title"),
+                    "id": section_id,
+                    "title": section_title,
                     "generated": False,
                     "error": str(e)
                 })
@@ -341,7 +352,7 @@ class TaskQueueService:
             
             # 更新为处理中
             task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now()
+            task.started_at = datetime.now(timezone.utc)
             db.commit()
             
             logger.info(f"Processing task {task_id}, type: {task.task_type}")
@@ -357,7 +368,7 @@ class TaskQueueService:
             
             # 更新为完成
             task.status = TaskStatus.COMPLETED
-            task.completed_at = datetime.now()
+            task.completed_at = datetime.now(timezone.utc)
             task.set_result(result)
             db.commit()
             
@@ -367,7 +378,7 @@ class TaskQueueService:
             logger.error(f"Task {task_id} failed: {e}")
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
-            task.completed_at = datetime.now()
+            task.completed_at = datetime.now(timezone.utc)
             db.commit()
         finally:
             db.close()

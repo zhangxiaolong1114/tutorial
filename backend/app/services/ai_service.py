@@ -21,17 +21,20 @@ class AIService:
         self.kimi_base_url = "https://api.moonshot.cn/v1"
         self.claude_api_key = settings.CLAUDE_API_KEY
     
-    def _call_kimi(self, messages: list, temperature: float = 0.7) -> str:
+    def _call_kimi(self, messages: list, temperature: float = 0.7, max_retries: int = 3) -> str:
         """
-        调用 Kimi API
+        调用 Kimi API（带重试机制）
         
         Args:
             messages: 消息列表
             temperature: 温度参数
+            max_retries: 最大重试次数
         
         Returns:
             AI 回复内容
         """
+        import time
+        
         if not self.kimi_api_key:
             raise ValueError("KIMI_API_KEY not configured")
         
@@ -40,25 +43,103 @@ class AIService:
             "Content-Type": "application/json"
         }
         
+        # 固定使用 moonshot-v1-8k 模型（用户要求不变）
+        model = "moonshot-v1-8k"
+        
+        # 估算 token 数量并记录
+        total_chars = sum(len(m["content"]) for m in messages)
+        prompt_preview = messages[-1]["content"][:200] if messages else ""
+        logger.info(f"[Kimi API] 开始调用 | 模型: {model} | 字符数: {total_chars} | 消息数: {len(messages)}")
+        logger.debug(f"[Kimi API] Prompt 预览: {prompt_preview}...")
+        
         data = {
-            "model": "moonshot-v1-8k",
+            "model": model,
             "messages": messages,
             "temperature": temperature
         }
         
-        try:
-            response = requests.post(
-                f"{self.kimi_base_url}/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=60
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.error(f"Kimi API call failed: {e}")
-            raise
+        last_error = None
+        start_time = time.time()
+        
+        for attempt in range(max_retries):
+            attempt_start = time.time()
+            logger.info(f"[Kimi API] 尝试 {attempt + 1}/{max_retries}")
+            
+            try:
+                response = requests.post(
+                    f"{self.kimi_base_url}/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=360  # 6 分钟超时
+                )
+                
+                elapsed = time.time() - attempt_start
+                logger.info(f"[Kimi API] 响应状态: {response.status_code} | 耗时: {elapsed:.2f}s")
+                
+                # 处理限流错误
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 5))
+                    logger.warning(f"[Kimi API] 触发限流 (429)，等待 {retry_after}s 后重试")
+                    time.sleep(retry_after)
+                    continue
+                
+                # 处理其他 HTTP 错误
+                if response.status_code != 200:
+                    error_body = response.text[:500]
+                    logger.error(f"[Kimi API] HTTP 错误: {response.status_code} | 响应: {error_body}")
+                    last_error = f"HTTP {response.status_code}: {error_body}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logger.info(f"[Kimi API] 等待 {wait_time}s 后重试...")
+                        time.sleep(wait_time)
+                    continue
+                
+                result = response.json()
+                
+                # 检查响应结构
+                if "choices" not in result or not result["choices"]:
+                    logger.error(f"[Kimi API] 响应结构异常: {json.dumps(result, ensure_ascii=False)[:500]}")
+                    raise ValueError("Invalid API response structure: missing 'choices'")
+                
+                content = result["choices"][0]["message"]["content"]
+                total_elapsed = time.time() - start_time
+                
+                # 记录成功信息
+                logger.info(f"[Kimi API] 调用成功 | 总耗时: {total_elapsed:.2f}s | 响应长度: {len(content)} 字符")
+                logger.debug(f"[Kimi API] 响应预览: {content[:200]}...")
+                
+                return content
+                
+            except requests.exceptions.Timeout as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"请求超时 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Kimi API] 超时错误 (attempt {attempt + 1}): {last_error}")
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt * 2, 30)  # 最大等待30秒
+                    logger.info(f"[Kimi API] 等待 {wait_time}s 后重试...")
+                    time.sleep(wait_time)
+                    
+            except requests.exceptions.RequestException as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"请求异常 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Kimi API] 请求异常 (attempt {attempt + 1}): {last_error}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"未知错误 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Kimi API] 未知错误 (attempt {attempt + 1}): {last_error}", exc_info=True)
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+        
+        # 所有重试都失败
+        total_elapsed = time.time() - start_time
+        final_error = f"[Kimi API] 调用失败（{max_retries} 次尝试后放弃）| 总耗时: {total_elapsed:.2f}s | 最后错误: {last_error}"
+        logger.error(final_error)
+        raise Exception(final_error)
     
     def generate_outline(self, course: str, knowledge_point: str, difficulty: str = "medium") -> Dict[str, Any]:
         """
@@ -78,23 +159,59 @@ class AIService:
 知识点：{knowledge_point}
 难度：{difficulty}
 
-请生成包含以下章节的大纲：
-1. 知识点概念 - 核心定义和公式
-2. 详细讲解 - 原理、推导、实例
-3. 重难点分析 - 常见难点和易错点
-4. 交互仿真 - 可交互的演示内容（描述需要模拟什么）
-5. 总结 - 核心要点回顾
-6. 习题与答案 - 练习题和详细解答
+请生成包含以下章节的大纲，每个章节的 content 必须是字符串数组（string[]），每个元素是一个要点：
+1. concept - 知识点概念：核心定义和公式（3-5个要点）
+2. explanation - 详细讲解：原理、推导、实例（3-4个要点）
+3. difficulties - 重难点分析：常见难点和易错点（2-3个要点）
+4. simulation - 交互仿真：描述需要模拟什么（1-2个要点）
+5. summary - 总结：核心要点回顾（2-3个要点）
+6. exercises - 习题与答案：练习题描述（2-3个要点，每个习题用字符串描述）
+
+重要规则：
+- content 必须是字符串数组，如：["要点1", "要点2"]
+- 不要返回对象数组或嵌套结构
+- 不要返回 [object Object] 这种无效内容
+- 每个要点必须是纯文本字符串
 
 请以 JSON 格式返回，结构如下：
 {{
-    "title": "大纲标题",
+    "title": "{course} - {knowledge_point}",
     "sections": [
         {{
             "id": "concept",
-            "title": "章节标题",
-            "content": "章节内容要点（数组或字符串）",
+            "title": "知识点概念",
+            "content": ["要点1", "要点2", "要点3"],
             "order": 1
+        }},
+        {{
+            "id": "explanation",
+            "title": "详细讲解",
+            "content": ["要点1", "要点2"],
+            "order": 2
+        }},
+        {{
+            "id": "difficulties",
+            "title": "重难点分析",
+            "content": ["要点1", "要点2"],
+            "order": 3
+        }},
+        {{
+            "id": "simulation",
+            "title": "交互仿真",
+            "content": ["仿真描述要点"],
+            "order": 4
+        }},
+        {{
+            "id": "summary",
+            "title": "总结",
+            "content": ["要点1", "要点2"],
+            "order": 5
+        }},
+        {{
+            "id": "exercises",
+            "title": "习题与答案",
+            "content": ["习题1描述", "习题2描述"],
+            "order": 6
         }}
     ]
 }}
@@ -102,7 +219,7 @@ class AIService:
 只返回 JSON，不要其他说明。"""
 
         messages = [
-            {"role": "system", "content": "你是一个专业的教育内容设计师，擅长生成结构化的教学大纲。"},
+            {"role": "system", "content": "你是一个专业的教育内容设计师，擅长生成结构化的教学大纲。严格遵守输出格式要求。"},
             {"role": "user", "content": prompt}
         ]
         
@@ -120,6 +237,10 @@ class AIService:
             response = response.strip()
             
             outline = json.loads(response)
+            
+            # 验证并清理大纲数据
+            outline = self._validate_and_clean_outline(outline)
+            
             logger.info(f"Generated outline for {course} - {knowledge_point}")
             return outline
         except json.JSONDecodeError as e:
@@ -130,6 +251,35 @@ class AIService:
             logger.error(f"Failed to generate outline: {e}")
             return self._get_default_outline(course, knowledge_point)
     
+    def _validate_and_clean_outline(self, outline: Dict[str, Any]) -> Dict[str, Any]:
+        """验证并清理大纲数据，修复常见问题"""
+        sections = outline.get("sections", [])
+        
+        for section in sections:
+            content = section.get("content", [])
+            
+            # 确保 content 是列表
+            if not isinstance(content, list):
+                content = [str(content)] if content else []
+            
+            # 清理列表中的无效内容
+            cleaned_content = []
+            for item in content:
+                item_str = str(item)
+                # 跳过 [object Object] 等无效内容
+                if item_str == "[object Object]" or not item_str.strip():
+                    continue
+                cleaned_content.append(item_str)
+            
+            # 如果清理后为空，添加默认内容
+            if not cleaned_content:
+                section_title = section.get("title", "")
+                cleaned_content = [f"{section_title}内容待补充"]
+            
+            section["content"] = cleaned_content
+        
+        return outline
+
     def _clean_markdown_code_blocks(self, text: str) -> str:
         """清理 Markdown 代码块标记"""
         text = text.strip()
@@ -168,32 +318,103 @@ class AIService:
 要点：
 {key_points_str}
 
-要求：
-1. 使用丰富的 HTML 标签（h3, h4, p, ul, ol, li, strong, em, blockquote, table 等）
-2. 使用 CSS 类名：
-   - 重要概念用 <strong> 加粗
-   - 提示信息用 <div class="tip">...</div>
-   - 警告信息用 <div class="warning">...</div>
-   - 引用用 <blockquote>...</blockquote>
-   - 公式用 \( ... \) 行内或 \\[ ... \\] 块级
-3. 内容详细、专业、易懂，适合理工科教学
-4. 使用具体例子和实际应用场景
-5. 不要包含 html/head/body 标签，只返回内容部分
+HTML 结构要求（必须严格遵守）：
+1. 最外层使用 <div class="section-content">
+2. 章节主标题使用 <h3>{section_title}</h3>（只使用一次）
+3. 小节标题使用 <h4>（如需要）
+4. 段落使用 <p>，重要概念用 <strong> 加粗
+5. 列表使用 <ul><li> 或 <ol><li>
+6. 公式使用 $...$ 行内或 $$...$$ 块级（不要用 \( \) 或 \[ \]）
+7. 提示信息使用 <div class="tip">...</div>
+8. 警告信息使用 <div class="warning">...</div>
+9. 不要包含 html/head/body 标签
+10. 不要嵌套 <main>、<section> 等结构性标签
+
+示例结构：
+<div class="section-content">
+  <h3>{section_title}</h3>
+  <p>段落内容...</p>
+  <h4>小节标题</h4>
+  <p>段落内容，<strong>重要概念</strong>...</p>
+  <ul>
+    <li>列表项1</li>
+    <li>列表项2</li>
+  </ul>
+  <div class="tip">提示信息...</div>
+</div>
 
 请直接返回 HTML 内容。"""
 
         messages = [
-            {"role": "system", "content": "你是一个专业的教育内容编写专家，擅长生成高质量的 HTML 教学内容。"},
+            {"role": "system", "content": "你是教育内容专家，生成统一结构的高质量HTML教学内容。严格遵守HTML结构要求。"},
             {"role": "user", "content": prompt}
         ]
         
         try:
             response = self._call_kimi(messages, temperature=0.7)
-            return self._clean_markdown_code_blocks(response)
+            cleaned = self._clean_markdown_code_blocks(response)
+            
+            # 统一包装结构
+            cleaned = self._normalize_html_structure(cleaned, section_title)
+            
+            # 转换公式格式 \( \) -> $, \[ \] -> $$
+            cleaned = self._convert_math_delimiters(cleaned)
+            
+            logger.info(f"Generated section '{section_title}', length: {len(cleaned)}")
+            return cleaned
         except Exception as e:
-            logger.error(f"Failed to generate section content: {e}")
-            return f"<p>内容生成失败，请重试。</p>"
+            logger.error(f"Failed to generate section content for '{section_title}': {e}")
+            # 返回更详细的错误信息
+            error_html = f'''<div class="section-content">
+<div class="warning">
+    <strong>内容生成失败</strong>
+    <p>章节：{section_title}</p>
+    <p>错误：{str(e)[:200]}</p>
+    <p>请稍后重试或联系管理员</p>
+</div>
+</div>'''
+            return error_html
     
+    def _normalize_html_structure(self, html: str, section_title: str) -> str:
+        """规范化 HTML 结构，确保统一格式"""
+        import re
+        
+        html = html.strip()
+        
+        # 如果已经有 section-content 包装，检查内部结构
+        if html.startswith('<div class="section-content">'):
+            # 检查是否有 h3 标题
+            if f'<h3>{section_title}</h3>' not in html and f'<h3>' not in html:
+                # 在开头添加 h3
+                html = html.replace('<div class="section-content">', f'<div class="section-content">\n  <h3>{section_title}</h3>')
+            return html
+        
+        # 如果没有 section-content 包装，添加包装
+        # 移除可能存在的结构性标签
+        html = re.sub(r'</?(main|section|article|aside|header|footer)[^>]*>', '', html, flags=re.IGNORECASE)
+        
+        # 检查是否已有 h3
+        has_h3 = f'<h3>{section_title}</h3>' in html or '<h3>' in html
+        
+        if not has_h3:
+            html = f'<h3>{section_title}</h3>\n{html}'
+        
+        # 包装在 section-content 中
+        return f'<div class="section-content">\n{html}\n</div>'
+    
+    def _convert_math_delimiters(self, html: str) -> str:
+        """转换数学公式分隔符 \( \) -> $, \[ \] -> $$"""
+        import re
+        
+        # 转换行内公式 \( ... \) -> $ ... $
+        # 使用非贪婪匹配，处理多行内容
+        html = re.sub(r'\\\((.*?)\\\)', r'$\1$', html, flags=re.DOTALL)
+        
+        # 转换块级公式 \[ ... \] -> $$ ... $$
+        html = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', html, flags=re.DOTALL)
+        
+        return html
+
     def generate_simulation_code(self, simulation_desc: str, course: str, knowledge_point: str) -> str:
         """
         生成交互仿真代码
@@ -230,10 +451,19 @@ class AIService:
         
         try:
             response = self._call_kimi(messages, temperature=0.8)
-            return self._clean_markdown_code_blocks(response)
+            cleaned = self._clean_markdown_code_blocks(response)
+            logger.info(f"Generated simulation code, length: {len(cleaned)}")
+            return cleaned
         except Exception as e:
             logger.error(f"Failed to generate simulation code: {e}")
-            return "<p>仿真代码生成失败，请重试。</p>"
+            error_html = f'''<div class="section-content">
+<div class="warning">
+    <strong>仿真代码生成失败</strong>
+    <p>错误：{str(e)[:200]}</p>
+    <p>请稍后重试或联系管理员</p>
+</div>
+</div>'''
+            return error_html
     
     def generate_complete_html(self, title: str, body_content: str) -> str:
         """
@@ -261,8 +491,6 @@ class AIService:
             if (typeof renderMathInElement !== 'undefined') {{
                 renderMathInElement(document.body, {{
                     delimiters: [
-                        {{left: '\\\\[', right: '\\\\]', display: true}},
-                        {{left: '\\\\(', right: '\\\\)', display: false}},
                         {{left: '$$', right: '$$', display: true}},
                         {{left: '$', right: '$', display: false}}
                     ],
@@ -549,6 +777,25 @@ class AIService:
             color: var(--text-secondary);
             font-size: 0.9em;
         }}
+        
+        /* 章节内容统一包装 */
+        .section-content {{
+            width: 100%;
+        }}
+        
+        .section-content h3 {{
+            color: var(--primary-color);
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--border-color);
+        }}
+        
+        .section-content h4 {{
+            color: var(--text-secondary);
+            font-size: 1.2em;
+            margin: 20px 0 10px;
+        }}
     </style>
 </head>
 <body>
@@ -584,7 +831,7 @@ class AIService:
                     "order": 2
                 },
                 {
-                    "id": "key_points",
+                    "id": "difficulties",
                     "title": "重难点分析",
                     "content": ["常见难点", "易错点", "解题技巧"],
                     "order": 3

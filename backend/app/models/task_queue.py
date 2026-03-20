@@ -2,7 +2,7 @@
 任务队列模型
 用于异步处理AI生成任务
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
@@ -10,6 +10,11 @@ from sqlalchemy.sql import func
 import json
 
 from app.core.database import Base
+
+
+def get_utc_now():
+    """获取当前 UTC 时间"""
+    return datetime.now(timezone.utc)
 
 
 class TaskStatus(str, Enum):
@@ -48,8 +53,8 @@ class TaskQueue(Base):
     resource_id = Column(Integer, nullable=True)
     resource_type = Column(String(50), nullable=True)  # outline / document
     
-    # 时间戳
-    created_at = Column(DateTime, default=func.now(), nullable=False)
+    # 时间戳（统一使用 UTC 时间）
+    created_at = Column(DateTime, default=get_utc_now, nullable=False)
     started_at = Column(DateTime, nullable=True)  # 开始处理时间
     completed_at = Column(DateTime, nullable=True)  # 完成时间
     
@@ -97,5 +102,5 @@ class TaskQueue(Base):
         if self.started_at and self.completed_at:
             return (self.completed_at - self.started_at).total_seconds()
         if self.started_at:
-            return (datetime.now() - self.started_at).total_seconds()
+            return (datetime.now(timezone.utc) - self.started_at).total_seconds()
         return None

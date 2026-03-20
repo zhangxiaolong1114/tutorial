@@ -7,9 +7,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.logging_config import setup_logging
 from app.api import auth, outline, document
 from app.core.database import engine, Base
 from app.services.task_queue_service import task_queue_service
+
+# 首先配置日志
+setup_logging()
 
 settings = get_settings()
 

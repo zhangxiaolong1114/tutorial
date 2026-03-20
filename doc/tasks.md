@@ -32,11 +32,16 @@
 | 2.6 邮箱验证码 | P0 | ✅ | `backend/app/services/email_service.py` |
 | 2.7 多设备登录支持 | P1 | ✅ | `backend/app/models/user_device.py` |
 | 2.8 忘记密码 | P1 | ✅ | `backend/app/api/auth.py` |
+| 2.9 Token 刷新机制 | P1 | ✅ | 双 Token 架构，自动静默刷新 |
 
 **技术决策:**
 - 密码加密: bcrypt
 - Token: JWT (HS256)
-- Token 有效期: 120 分钟
+- **双 Token 架构**:
+  - Access Token: 30 分钟短期有效
+  - Refresh Token: 7 天长期有效
+- 自动刷新: axios/fetch 响应拦截器实现
+- 并发处理: 刷新队列机制，避免重复刷新
 - 邮箱服务: Office 365 (smtp.partner.outlook.cn)
 - 设备指纹: 浏览器特征生成唯一标识
 
@@ -65,6 +70,13 @@
 | 3.18 时区显示修复 | P1 | ✅ | 后端统一返回 UTC 时间，前端自动转换 |
 | 3.19 UI 细节优化 | P1 | ✅ | 任务中心边框、布局调整 |
 | 3.20 时间格式统一 | P1 | ✅ | 所有 API 时间字段使用 format_datetime() |
+| 3.21 Token 刷新机制 | P1 | ✅ | 解决生成文档后点击查看触发重新登录问题 |
+| 3.22 API 超时优化 | P1 | ✅ | 6分钟超时 + 3次重试 + 指数退避 |
+| 3.23 详细日志配置 | P1 | ✅ | ai_service.log / task_queue.log / error.log |
+| 3.24 HTML 结构统一 | P1 | ✅ | section-content 统一包装，规范层级 |
+| 3.25 大纲数据清理 | P1 | ✅ | 自动过滤 [object Object] 等无效内容 |
+| 3.26 公式渲染修复 | P1 | ✅ | \( \) \[ \] 转换为 $ $$，KaTeX 配置修复 |
+| 3.27 时区统一 | P1 | ✅ | 所有模型时间字段统一使用 UTC |
 
 **技术决策:**
 - AI 模型: Kimi (Moonshot)
@@ -228,5 +240,5 @@ tutorial/
 
 ---
 
-*文档版本: v2.0*
+*文档版本: v2.2*
 *最后更新: 2026-03-20*

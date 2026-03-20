@@ -41,7 +41,10 @@
 - **注册**: 邮箱 + 密码 + 验证码
 - **登录**: 支持多设备，新设备需邮箱验证
 - **密码找回**: 邮箱验证码重置
-- **JWT Token**: 120 分钟有效期
+- **JWT Token**: 双 Token 架构
+  - Access Token: 30 分钟短期有效
+  - Refresh Token: 7 天长期有效
+  - 自动静默刷新，用户无感知
 
 #### 1.2 核心文件
 
@@ -52,7 +55,10 @@
 | `backend/app/api/auth.py` | 认证路由：注册、登录、验证码、重置密码 |
 | `backend/app/services/user_service.py` | 用户业务逻辑：创建、验证、设备管理 |
 | `backend/app/services/email_service.py` | 邮件服务：Office 365 SMTP |
-| `backend/app/core/security.py` | JWT 生成与验证 |
+| `backend/app/core/security.py` | JWT 生成与验证（含 Refresh Token） |
+| `backend/app/api/auth.py` | 新增 `/auth/refresh` 刷新接口 |
+| `frontend/src/api/auth.ts` | axios 响应拦截器自动刷新 |
+| `frontend/src/api/index.ts` | fetch 封装支持自动刷新 |
 | `frontend/src/views/LoginView.vue` | 登录页面 |
 | `frontend/src/views/RegisterView.vue` | 注册页面 |
 | `frontend/src/stores/auth.ts` | Pinia 认证状态管理 |
@@ -64,8 +70,34 @@
 用户登录
     ↓
 检查设备指纹
-    ├── 已信任设备 → 直接登录
+    ├── 已信任设备 → 直接登录 → 返回 Access Token + Refresh Token
     └── 新设备 → 发送验证码 → 验证成功 → 加入信任列表 → 登录
+```
+
+**Token 刷新流程:**
+```
+API 请求
+    ↓
+Access Token 过期 (401)
+    ↓
+自动调用 /auth/refresh
+    ↓
+使用 Refresh Token 获取新 Access Token
+    ↓
+重试原请求（用户无感知）
+    ↓
+Refresh Token 也过期 → 跳转登录页
+```
+
+**并发请求处理:**
+```
+请求 A → 发现 401 → 开始刷新
+请求 B → 发现 401 → 加入等待队列
+请求 C → 发现 401 → 加入等待队列
+    ↓
+刷新完成 → 新 Token 通知所有等待请求
+    ↓
+A/B/C 使用新 Token 重试
 ```
 
 ---
@@ -288,8 +320,9 @@ User (1)
 | 接口 | 方法 | 说明 | 文件 |
 |------|------|------|------|
 | `/auth/register` | POST | 用户注册 | `auth.py` |
-| `/auth/login` | POST | 用户登录 | `auth.py` |
-| `/auth/verify-login` | POST | 验证码登录 | `auth.py` |
+| `/auth/login` | POST | 用户登录（返回双 Token） | `auth.py` |
+| `/auth/verify-login` | POST | 验证码登录（返回双 Token） | `auth.py` |
+| `/auth/refresh` | POST | 刷新 Access Token | `auth.py` |
 | `/auth/send-verification-code` | POST | 发送验证码 | `auth.py` |
 | `/auth/reset-password` | POST | 重置密码 | `auth.py` |
 | `/auth/me` | GET | 获取当前用户 | `auth.py` |
@@ -365,6 +398,13 @@ User (1)
 - ✅ 异步任务 401 错误处理
 - ✅ Markdown 代码块清理
 - ✅ 中文文件名下载
+- ✅ Token 刷新机制（双 Token 架构）
+- ✅ API 超时与重试机制（6分钟超时 + 3次重试）
+- ✅ 详细日志配置（按模块分离日志文件）
+- ✅ HTML 结构统一（section-content 包装）
+- ✅ 大纲数据验证（自动清理无效内容）
+- ✅ 公式渲染修复（统一使用 $ 分隔符）
+- ✅ 时区统一（所有时间字段使用 UTC）
 
 ### 待优化
 - ⏳ 仿真代码执行沙箱（安全）
@@ -394,5 +434,5 @@ SMTP_PASSWORD=...
 
 ---
 
-*文档版本: v1.0*
+*文档版本: v1.2*
 *最后更新: 2026-03-20*
