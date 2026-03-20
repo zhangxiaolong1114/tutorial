@@ -34,6 +34,9 @@ class Document(Base):
     # 章节信息（JSON 格式，存储章节结构）
     sections = Column(Text, nullable=True)
     
+    # 仿真代码（单独存储，便于前端特殊处理）
+    simulation_code = Column(Text, nullable=True)
+    
     # 关联大纲
     outline = relationship("Outline", back_populates="documents")
     

@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # AI API 配置
     KIMI_API_KEY: str = ""
     CLAUDE_API_KEY: str = ""
+    CLAUDE_MODEL: str = ""
     
     # 文件存储配置
     STORAGE_TYPE: str = "database"  # database 或 filesystem

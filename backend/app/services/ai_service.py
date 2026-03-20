@@ -43,7 +43,7 @@ class AIService:
             "Content-Type": "application/json"
         }
         
-        # 固定使用 moonshot-v1-8k 模型（用户要求不变）
+        # 使用 moonshot-v1-8k 模型（默认）
         model = "moonshot-v1-8k"
         
         # 估算 token 数量并记录
@@ -141,6 +141,190 @@ class AIService:
         logger.error(final_error)
         raise Exception(final_error)
     
+    def _call_claude(self, messages: list, temperature: float = 0.7, max_retries: int = 3) -> str:
+        """
+        调用 Claude API（用于生成仿真代码，支持更长输出）
+        
+        Args:
+            messages: 消息列表
+            temperature: 温度参数
+            max_retries: 最大重试次数
+        
+        Returns:
+            AI 回复内容
+        """
+        import time
+        
+        if not self.claude_api_key:
+            raise ValueError("CLAUDE_API_KEY not configured")
+        
+        headers = {
+            "Authorization": f"Bearer {self.claude_api_key}",
+            "Content-Type": "application/json",
+            "Anthropic-Version": "2023-06-01"
+        }
+        
+        # 从环境变量读取模型名称，默认使用 claude-3-5-sonnet 
+        model = getattr(settings, 'CLAUDE_MODEL', 'claude-opus-4-5-20251101') # 不要更改
+        
+        # 转换消息格式为 Claude 格式
+        system_msg = ""
+        user_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_msg = msg.get("content", "")
+            else:
+                user_messages.append(msg)
+        
+        # 构建请求体
+        data = {
+            "model": model,
+            "max_tokens": 8192,  # Claude 支持 8k 输出
+            "temperature": temperature,
+            "messages": user_messages
+        }
+        if system_msg:
+            data["system"] = system_msg
+        
+        last_error = None
+        start_time = time.time()
+        
+        for attempt in range(max_retries):
+            attempt_start = time.time()
+            logger.info(f"[Claude API] 尝试 {attempt + 1}/{max_retries}")
+            
+            try:
+                response = requests.post(
+                    # "https://api.anthropic.com/v1/messages",
+                    "https://xiaoai.plus/v1/messages",
+                    headers=headers,
+                    json=data,
+                    timeout=360
+                )
+                
+                elapsed = time.time() - attempt_start
+                logger.info(f"[Claude API] 响应状态: {response.status_code} | 耗时: {elapsed:.2f}s")
+                
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 5))
+                    logger.warning(f"[Claude API] 触发限流 (429)，等待 {retry_after}s 后重试")
+                    time.sleep(retry_after)
+                    continue
+                
+                if response.status_code != 200:
+                    error_body = response.text[:500]
+                    logger.error(f"[Claude API] HTTP 错误: {response.status_code} | 响应: {error_body}")
+                    last_error = f"HTTP {response.status_code}: {error_body}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        time.sleep(wait_time)
+                    continue
+                
+                result = response.json()
+                
+                # 保存原始响应到日志文件以便调试
+                import os
+                from datetime import datetime
+                log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs', 'claude_responses')
+                os.makedirs(log_dir, exist_ok=True)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                log_file = os.path.join(log_dir, f'claude_response_{timestamp}.json')
+                try:
+                    with open(log_file, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, ensure_ascii=False, indent=2)
+                    logger.debug(f"[Claude API] 原始响应已保存到: {log_file}")
+                except Exception as e:
+                    logger.warning(f"[Claude API] 保存响应日志失败: {e}")
+                
+                # 处理不同的响应格式
+                content = None
+                extracted_format = None
+                
+                # 尝试标准 Claude 格式
+                if "content" in result and result["content"]:
+                    if isinstance(result["content"], list) and len(result["content"]) > 0:
+                        if "text" in result["content"][0]:
+                            content = result["content"][0]["text"]
+                            extracted_format = "claude_standard"
+                        elif "value" in result["content"][0]:
+                            content = result["content"][0]["value"]
+                            extracted_format = "claude_value"
+                
+                # 尝试 OpenAI 兼容格式
+                if not content and "choices" in result and result["choices"]:
+                    choice = result["choices"][0]
+                    if "message" in choice and "content" in choice["message"]:
+                        content = choice["message"]["content"]
+                        extracted_format = "openai_compatible"
+                    elif "text" in choice:
+                        content = choice["text"]
+                        extracted_format = "openai_text"
+                
+                # 尝试直接 content 字段
+                if not content and "content" in result and isinstance(result["content"], str):
+                    content = result["content"]
+                    extracted_format = "direct_content"
+                
+                # 尝试 data.choices 格式
+                if not content and "data" in result and "choices" in result["data"]:
+                    content = result["data"]["choices"][0].get("message", {}).get("content", "")
+                    extracted_format = "data_choices"
+                
+                # 尝试嵌套在 data 中的 content
+                if not content and "data" in result and isinstance(result["data"], dict):
+                    if "content" in result["data"]:
+                        data_content = result["data"]["content"]
+                        if isinstance(data_content, list) and len(data_content) > 0:
+                            content = data_content[0].get("text", "")
+                            extracted_format = "data_content_list"
+                        elif isinstance(data_content, str):
+                            content = data_content
+                            extracted_format = "data_content_string"
+                
+                if not content:
+                    logger.error(f"[Claude API] 响应结构异常，无法解析。原始响应已保存到: {log_file}")
+                    logger.error(f"[Claude API] 响应内容: {json.dumps(result, ensure_ascii=False)[:1000]}")
+                    raise ValueError(f"Invalid API response structure: cannot extract content. Log saved to: {log_file}")
+                
+                logger.info(f"[Claude API] 响应格式: {extracted_format}")
+                
+                total_elapsed = time.time() - start_time
+                
+                logger.info(f"[Claude API] 调用成功 | 总耗时: {total_elapsed:.2f}s | 响应长度: {len(content)} 字符")
+                logger.debug(f"[Claude API] 响应预览: {content[:200]}...")
+                
+                return content
+                
+            except requests.exceptions.Timeout as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"请求超时 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Claude API] 超时错误 (attempt {attempt + 1}): {last_error}")
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt * 2, 30)
+                    time.sleep(wait_time)
+                    
+            except requests.exceptions.RequestException as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"请求异常 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Claude API] 请求异常 (attempt {attempt + 1}): {last_error}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                elapsed = time.time() - attempt_start
+                last_error = f"未知错误 ({elapsed:.1f}s): {str(e)}"
+                logger.error(f"[Claude API] 未知错误 (attempt {attempt + 1}): {last_error}", exc_info=True)
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+        
+        # 所有重试都失败
+        total_elapsed = time.time() - start_time
+        final_error = f"[Claude API] 调用失败（{max_retries} 次尝试后放弃）| 总耗时: {total_elapsed:.2f}s | 最后错误: {last_error}"
+        logger.error(final_error)
+        raise Exception(final_error)
+    
     def generate_outline(self, course: str, knowledge_point: str, difficulty: str = "medium") -> Dict[str, Any]:
         """
         生成教学大纲
@@ -153,26 +337,60 @@ class AIService:
         Returns:
             大纲 JSON 数据
         """
-        prompt = f"""你是一个专业的教育内容设计师。请为以下课程知识点生成详细的教学大纲。
+        prompt = f"""你是一位资深教授，为本科生设计专业、深入的教学大纲。请为以下课程知识点生成结构化的教学大纲。
 
-课程：{course}
-知识点：{knowledge_point}
-难度：{difficulty}
+## 课程信息
+- 课程：{course}
+- 知识点：{knowledge_point}
+- 难度：{difficulty}
 
-请生成包含以下章节的大纲，每个章节的 content 必须是字符串数组（string[]），每个元素是一个要点：
-1. concept - 知识点概念：核心定义和公式（3-5个要点）
-2. explanation - 详细讲解：原理、推导、实例（3-4个要点）
-3. difficulties - 重难点分析：常见难点和易错点（2-3个要点）
-4. simulation - 交互仿真：描述需要模拟什么（1-2个要点）
-5. summary - 总结：核心要点回顾（2-3个要点）
-6. exercises - 习题与答案：练习题描述（2-3个要点，每个习题用字符串描述）
+## 大纲结构要求
+每个章节的 content 必须是字符串数组，每个元素是一个具体的教学要点（不是标题，而是需要讲解的具体内容）。
 
-重要规则：
-- content 必须是字符串数组，如：["要点1", "要点2"]
-- 不要返回对象数组或嵌套结构
-- 不要返回 [object Object] 这种无效内容
-- 每个要点必须是纯文本字符串
+### 1. concept - 知识点概念（4-6个要点）
+必须包含：
+- 严格的数学定义（含公式）
+- 物理意义/几何解释
+- 定理/定律的完整表述
+- 适用条件和边界
+- 与相关概念的区别
 
+### 2. explanation - 详细讲解（5-7个要点）
+必须包含：
+- 原理的数学推导（关键步骤）
+- 不同角度的理解方式
+- 典型实例1：简单情况（含具体数值）
+- 典型实例2：复杂情况（含具体数值）
+- 工程应用背景
+- 参数对结果的影响分析
+
+### 3. difficulties - 重难点分析（4-5个要点）
+必须包含：
+- 学生最常见的理解误区及纠正
+- 数学推导中的关键难点
+- 实际应用中的注意事项
+- 与其他知识点的混淆点对比
+- 进阶思考/拓展问题
+
+### 4. simulation - 交互仿真（2-3个要点，暂不实现，仅描述）
+- 仿真目标和观察指标
+- 可调参数及其物理意义
+
+### 5. summary - 总结（4-5个要点）
+必须包含：
+- 核心公式回顾
+- 关键概念梳理
+- 适用场景总结
+- 与后续知识点的联系
+
+### 6. exercises - 习题与答案（4-5个要点）
+必须包含：
+- 基础题：直接应用公式（含具体数值）
+- 提高题：综合应用（含具体数值）
+- 设计题：实际工程问题
+- 证明题：重要定理的证明
+
+## 输出格式
 请以 JSON 格式返回，结构如下：
 {{
     "title": "{course} - {knowledge_point}",
@@ -180,41 +398,48 @@ class AIService:
         {{
             "id": "concept",
             "title": "知识点概念",
-            "content": ["要点1", "要点2", "要点3"],
+            "content": ["严格数学定义：...", "物理意义：...", "定理表述：...", "适用条件：..."],
             "order": 1
         }},
         {{
             "id": "explanation",
             "title": "详细讲解",
-            "content": ["要点1", "要点2"],
+            "content": ["数学推导：...", "实例1：...", "实例2：...", "工程应用：..."],
             "order": 2
         }},
         {{
             "id": "difficulties",
             "title": "重难点分析",
-            "content": ["要点1", "要点2"],
+            "content": ["常见误区：...", "推导难点：...", "应用注意：..."],
             "order": 3
         }},
         {{
             "id": "simulation",
             "title": "交互仿真",
-            "content": ["仿真描述要点"],
+            "content": ["仿真目标：...", "可调参数：..."],
             "order": 4
         }},
         {{
             "id": "summary",
             "title": "总结",
-            "content": ["要点1", "要点2"],
+            "content": ["核心公式：...", "关键概念：...", "适用场景：..."],
             "order": 5
         }},
         {{
             "id": "exercises",
             "title": "习题与答案",
-            "content": ["习题1描述", "习题2描述"],
+            "content": ["基础题：...", "提高题：...", "设计题：..."],
             "order": 6
         }}
     ]
 }}
+
+## 重要规则
+- content 必须是字符串数组，每个元素是具体的教学内容描述
+- 要点要具体、可执行，不是泛泛的标题
+- 包含具体的数值、公式、案例细节
+- 不要返回对象数组或嵌套结构
+- 不要返回 [object Object] 这种无效内容
 
 只返回 JSON，不要其他说明。"""
 
@@ -310,40 +535,71 @@ class AIService:
         """
         key_points_str = "\n".join([f"- {point}" for point in section_key_points])
         
-        prompt = f"""请为以下章节生成详细的教学 HTML 内容。
+        prompt = f"""你是一位在高校执教20年的资深教授，擅长把复杂的工程概念用生动的语言讲清楚。请为以下章节撰写教学内容，像在课堂上讲课一样自然流畅。
 
-课程：{course}
-知识点：{knowledge_point}
-章节：{section_title}
-要点：
+## 课程信息
+- 课程：{course}
+- 知识点：{knowledge_point}
+- 章节：{section_title}
+- 学生水平：本科工科生，有一定数学基础但缺乏工程直觉
+
+## 需要覆盖的核心内容
 {key_points_str}
 
-HTML 结构要求（必须严格遵守）：
+## 教学风格要求（非常重要）
+1. **像讲课一样写作**：
+   - 用"我们"、"大家"、"同学们"等称呼，营造课堂氛围
+   - 适当使用设问："那么问题来了..."、"大家有没有想过..."
+   - 加入教授的思考和经验："我在工程实践中发现..."、"很多同学在这里会犯一个错误..."
+
+2. **从直观到抽象**：
+   - 先用生活化例子或物理直觉引入（如开车、调音量、温度控制等）
+   - 再逐步过渡到数学定义和公式
+   - 最后回到工程应用，形成闭环
+
+3. **内容组织灵活多样**：
+   - 不要机械地1.2.3.4编号，根据内容特点选择最适合的结构
+   - 可以用"故事线"、"问题驱动"、"对比分析"、"案例研究"等多种形式
+   - 允许有"知识卡片"、"思考题"、"延伸阅读"等灵活板块
+
+4. **真实教学场景**：
+   - 包含"常见错误"：指出学生容易混淆的地方
+   - 包含"教授提示"：分享考试重点、记忆技巧、工程经验
+   - 包含"互动思考"：提出让学生暂停思考的问题
+   - 包含"历史背景"：知识点的发展历史、重要人物
+
+5. **公式讲解生动**：
+   - 每个公式都要解释"为什么长这样"
+   - 用物理意义解释每一项的作用
+   - 通过量纲分析验证合理性
+
+## HTML 格式要求
 1. 最外层使用 <div class="section-content">
-2. 章节主标题使用 <h3>{section_title}</h3>（只使用一次）
-3. 小节标题使用 <h4>（如需要）
+2. 章节主标题使用 <h3>{section_title}</h3>
+3. 小节标题用 <h4>，但标题要生动（如"为什么需要微分项？"而不是"3. 微分控制"）
 4. 段落使用 <p>，重要概念用 <strong> 加粗
-5. 列表使用 <ul><li> 或 <ol><li>
-6. 公式使用 $...$ 行内或 $$...$$ 块级（不要用 \( \) 或 \[ \]）
-7. 提示信息使用 <div class="tip">...</div>
-8. 警告信息使用 <div class="warning">...</div>
+5. 公式使用 $...$ 行内或 $$...$$ 块级
+6. 使用 <div class="tip"> 放置教授提示、记忆技巧
+7. 使用 <div class="warning"> 放置常见错误、易混淆点
+8. 可以使用 <blockquote> 放置名言、历史背景
 9. 不要包含 html/head/body 标签
-10. 不要嵌套 <main>、<section> 等结构性标签
+10. **结构要求**：div 嵌套要清晰，section-content 内直接是 h3 + 多个段落/小节，不要过多嵌套
 
-示例结构：
-<div class="section-content">
-  <h3>{section_title}</h3>
-  <p>段落内容...</p>
-  <h4>小节标题</h4>
-  <p>段落内容，<strong>重要概念</strong>...</p>
-  <ul>
-    <li>列表项1</li>
-    <li>列表项2</li>
-  </ul>
-  <div class="tip">提示信息...</div>
-</div>
+## 优秀教学内容的例子
 
-请直接返回 HTML 内容。"""
+❌ 死板的写法：
+"1. 数学定义：PD控制器的输出为 u(t) = Kp*e(t) + Kd*de/dt"
+
+✅ 生动的写法：
+"我们先从一个生活场景说起。想象你在开车，目标是保持车速在60km/h。这时候你会怎么做？
+
+首先，你会看仪表盘，发现实际速度是55km/h——这就是'偏差'。你心里想：'慢了5公里，得踩油门'。踩多少呢？如果你是个急性子，可能会猛踩；如果比较谨慎，就轻踩。这种'根据偏差大小决定动作强弱'的直觉，就是比例控制的思想。
+
+但等等，如果前面是个上坡呢？你刚踩完油门，发现车速还在往下掉。这时候老司机都知道：'坡度在变大，得提前多踩点'。这种'根据变化趋势提前动作'的智慧，就是微分控制的精髓。
+
+把这两种直觉写成数学语言，就得到了PD控制器的核心公式：$$u(t) = K_p e(t) + K_d \\frac{{de(t)}}{{dt}}$$"
+
+请生成像上面这样生动、有温度、有故事的教学 HTML 内容。"""
 
         messages = [
             {"role": "system", "content": "你是教育内容专家，生成统一结构的高质量HTML教学内容。严格遵守HTML结构要求。"},
@@ -376,27 +632,35 @@ HTML 结构要求（必须严格遵守）：
             return error_html
     
     def _normalize_html_structure(self, html: str, section_title: str) -> str:
-        """规范化 HTML 结构，确保统一格式"""
+        """规范化 HTML 结构，确保统一格式和清晰的 div 嵌套"""
         import re
         
         html = html.strip()
         
-        # 如果已经有 section-content 包装，检查内部结构
+        # 移除可能存在的结构性标签（避免嵌套混乱）
+        html = re.sub(r'</?(main|section|article|aside|header|footer)[^>]*>', '', html, flags=re.IGNORECASE)
+        
+        # 如果已经有 section-content 包装
         if html.startswith('<div class="section-content">'):
+            # 检查内部是否有多余的 section-content 嵌套
+            # 统计 section-content 的数量
+            open_count = html.count('<div class="section-content">')
+            if open_count > 1:
+                # 移除内部的 section-content 包装，只保留最外层
+                html = re.sub(r'<div class="section-content">', '', html, count=open_count-1)
+                html = re.sub(r'</div>(?=\s*</div>\s*$)', '', html, count=open_count-1)
+            
             # 检查是否有 h3 标题
-            if f'<h3>{section_title}</h3>' not in html and f'<h3>' not in html:
-                # 在开头添加 h3
-                html = html.replace('<div class="section-content">', f'<div class="section-content">\n  <h3>{section_title}</h3>')
+            h3_match = re.search(r'<h3>(.*?)</h3>', html)
+            if not h3_match:
+                # 在 section-content 开始后添加 h3
+                html = html.replace('<div class="section-content">', f'<div class="section-content">\n<h3>{section_title}</h3>', 1)
             return html
         
         # 如果没有 section-content 包装，添加包装
-        # 移除可能存在的结构性标签
-        html = re.sub(r'</?(main|section|article|aside|header|footer)[^>]*>', '', html, flags=re.IGNORECASE)
-        
         # 检查是否已有 h3
-        has_h3 = f'<h3>{section_title}</h3>' in html or '<h3>' in html
-        
-        if not has_h3:
+        h3_match = re.search(r'<h3>(.*?)</h3>', html)
+        if not h3_match:
             html = f'<h3>{section_title}</h3>\n{html}'
         
         # 包装在 section-content 中
@@ -427,31 +691,47 @@ HTML 结构要求（必须严格遵守）：
         Returns:
             JavaScript 代码字符串
         """
-        prompt = f"""请为以下知识点生成可交互的 HTML5 Canvas 仿真代码。
+        prompt = f"""Generate interactive HTML5 Canvas simulation for {knowledge_point} ({course}).
 
-课程：{course}
-知识点：{knowledge_point}
-仿真需求：{simulation_desc}
+Requirements: {simulation_desc}
 
-要求：
-1. 使用原生 HTML5 Canvas API（不使用外部库）
-2. 提供可调节的参数（滑块或按钮），使用美观的样式
-3. 实时显示计算结果，使用彩色图表
-4. 包含动画效果，使用 requestAnimationFrame
-5. 代码完整，可直接运行
-6. 返回完整的 HTML 代码（包含 canvas 和 script）
-7. 添加说明文字解释如何使用仿真
+STRICT OUTPUT RULES:
+1. Return ONLY content inside <div class="simulation-container">, NO html/head/body tags
+2. Wrap ALL JS in (function(){{...}})(); IIFE, NO global variables
+3. Use canvas ID: sim-canvas-abc123
+4. Canvas: 700x480px, border-radius:12px, box-shadow
 
-请返回完整的 HTML 代码。"""
+REQUIRED ELEMENTS:
+- Centered <h4> title (color:#3b82f6) and <p> description
+- Data panel: gradient div with 2-3 large number displays
+- Canvas with grid, axes, and curve legend
+- Controls: 2-4 sliders with live values, Start/Pause/Reset buttons, 2-3 preset buttons
+
+JS REQUIREMENTS:
+- Use requestAnimationFrame for animation
+- Redraw immediately on parameter change
+- Multiple curves with different colors
+- COMPLETE, RUNNABLE code only"""
 
         messages = [
-            {"role": "system", "content": "你是一个专业的物理仿真开发者，擅长使用 HTML5 Canvas 创建交互式教学演示。"},
+            {"role": "system", "content": "You are an expert in creating interactive HTML5 Canvas simulations for education. Write clean, complete, runnable code with proper HTML structure."},
             {"role": "user", "content": prompt}
         ]
         
         try:
-            response = self._call_kimi(messages, temperature=0.8)
+            # 使用 Claude 生成仿真代码（支持更长输出）
+            if self.claude_api_key:
+                logger.info("Using Claude API for simulation generation")
+                response = self._call_claude(messages, temperature=0.7)
+            else:
+                logger.info("Claude API key not set, falling back to Kimi")
+                response = self._call_kimi(messages, temperature=0.8)
+            
             cleaned = self._clean_markdown_code_blocks(response)
+            
+            # Post-process to extract simulation content
+            cleaned = self._extract_simulation_content(cleaned)
+            
             logger.info(f"Generated simulation code, length: {len(cleaned)}")
             return cleaned
         except Exception as e:
@@ -464,6 +744,45 @@ HTML 结构要求（必须严格遵守）：
 </div>
 </div>'''
             return error_html
+    
+    def _extract_simulation_content(self, html: str) -> str:
+        """Extract simulation content and remove extra HTML structure tags."""
+        import re
+        
+        html = html.strip()
+        
+        # If already correct format, return directly
+        if html.startswith('<div class="simulation-container">') or html.startswith("<div class='simulation-container'>"):
+            return html
+        
+        # Try to extract body content from full HTML document
+        body_match = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
+        if body_match:
+            body_content = body_match.group(1).strip()
+            # If simulation-container exists in body, extract it
+            sim_match = re.search(r'(<div class=["\']simulation-container["\']>.*?</div>)', body_content, re.DOTALL | re.IGNORECASE)
+            if sim_match:
+                return sim_match.group(1)
+            # Otherwise wrap entire body content
+            return f'<div class="simulation-container">\n{body_content}\n</div>'
+        
+        # Try to find simulation-container directly
+        sim_match = re.search(r'(<div class=["\']simulation-container["\']>.*?</div>)', html, re.DOTALL | re.IGNORECASE)
+        if sim_match:
+            return sim_match.group(1)
+        
+        # Remove html/head/body tags and wrap
+        html = re.sub(r'<!DOCTYPE[^>]*>', '', html, flags=re.IGNORECASE)
+        html = re.sub(r'</?html[^>]*>', '', html, flags=re.IGNORECASE)
+        html = re.sub(r'<head[^>]*>.*?</head>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'</?body[^>]*>', '', html, flags=re.IGNORECASE)
+        
+        html = html.strip()
+        
+        if not html.startswith('<'):
+            html = f'<p>{html}</p>'
+        
+        return f'<div class="simulation-container">\n{html}\n</div>'
     
     def generate_complete_html(self, title: str, body_content: str) -> str:
         """

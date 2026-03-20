@@ -224,6 +224,7 @@ class TaskQueueService:
         # 生成每个章节的HTML内容
         html_contents = []
         generated_sections = []
+        simulation_html = None  # 单独存储仿真代码
         
         for section in sections:
             section_id = section.get("id", "")
@@ -231,14 +232,26 @@ class TaskQueueService:
             section_content = section.get("content", [])
             
             try:
-                # 仿真章节生成仿真代码
+                # 仿真章节暂时跳过（后续优化）
                 if section_id == "simulation" or "仿真" in section_title:
-                    simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
-                    html_content = ai_service.generate_simulation_code(
-                        simulation_desc=simulation_desc,
-                        course=outline.course,
-                        knowledge_point=outline.knowledge_point
-                    )
+                    # 生成占位内容
+                    placeholder_content = f'''<div class="section-content">
+<h3>{section_title}</h3>
+<div class="tip">
+    <strong>交互仿真开发中</strong>
+    <p>本知识点的交互式仿真功能正在开发中，敬请期待。</p>
+    <p>仿真内容：{section_content[0] if isinstance(section_content, list) and section_content else str(section_content)}</p>
+</div>
+</div>'''
+                    html_contents.append(f"<section id='{section_id}'>\n{placeholder_content}\n</section>")
+                    generated_sections.append({
+                        "id": section_id,
+                        "title": section_title,
+                        "generated": True,
+                        "error": None,
+                        "type": "simulation_placeholder"
+                    })
+                    logger.info(f"Section {section_id} skipped (simulation placeholder)")
                 else:
                     # 普通章节生成HTML
                     html_content = ai_service.generate_section_content(
@@ -247,20 +260,21 @@ class TaskQueueService:
                         course=outline.course,
                         knowledge_point=outline.knowledge_point
                     )
-                
-                # 检查返回的内容是否包含失败标记
-                has_error = '内容生成失败' in html_content or '仿真代码生成失败' in html_content
-                
-                html_contents.append(f"<section id='{section_id}'>\n{html_content}\n</section>")
-                generated_sections.append({
-                    "id": section_id,
-                    "title": section_title,
-                    "generated": not has_error,
-                    "error": "AI生成返回失败内容" if has_error else None
-                })
-                
-                if has_error:
-                    logger.warning(f"Section {section_id} returned error content")
+                    
+                    # 检查返回的内容是否包含失败标记
+                    has_error = '内容生成失败' in html_content
+                    
+                    html_contents.append(f"<section id='{section_id}'>\n{html_content}\n</section>")
+                    generated_sections.append({
+                        "id": section_id,
+                        "title": section_title,
+                        "generated": not has_error,
+                        "error": "AI生成返回失败内容" if has_error else None,
+                        "type": "content"
+                    })
+                    
+                    if has_error:
+                        logger.warning(f"Section {section_id} returned error content")
                     
             except Exception as e:
                 logger.error(f"Failed to generate section {section_id}: {e}")
@@ -271,12 +285,23 @@ class TaskQueueService:
                     "id": section_id,
                     "title": section_title,
                     "generated": False,
-                    "error": str(e)
+                    "error": str(e),
+                    "type": "simulation" if section_id == "simulation" else "content"
                 })
         
         # 合并 body 内容
         body_content = "\n\n".join(html_contents)
         title = outline_data.get("title", f"{outline.course} - {outline.knowledge_point}")
+        
+        # 如果有仿真内容，替换占位符并特殊处理
+        if simulation_html:
+            # 将仿真内容嵌入到占位符位置
+            # 为仿真内容添加隔离包装，确保脚本不会污染全局
+            isolated_simulation = f'''<div class="simulation-wrapper" style="border: 2px solid var(--primary-color); border-radius: 12px; padding: 20px; margin: 20px 0; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
+    <h3 style="color: var(--primary-color); margin-bottom: 15px;">🔬 交互仿真</h3>
+    {simulation_html}
+</div>'''
+            body_content = body_content.replace("<!-- SIMULATION_PLACEHOLDER -->", isolated_simulation)
         
         # 生成完整 HTML 文档
         full_html = ai_service.generate_complete_html(title, body_content)
@@ -291,7 +316,8 @@ class TaskQueueService:
                 outline_id=outline.id,
                 title=title,
                 html_content=None,  # 暂时为空
-                file_path=None
+                file_path=None,
+                simulation_code=simulation_html  # 单独存储仿真代码
             )
             document.set_sections_data(generated_sections)
             db.add(document)
@@ -323,7 +349,8 @@ class TaskQueueService:
                 user_id=task.user_id,
                 outline_id=outline.id,
                 title=title,
-                html_content=full_html
+                html_content=full_html,
+                simulation_code=simulation_html  # 单独存储仿真代码
             )
             document.set_sections_data(generated_sections)
             db.add(document)
