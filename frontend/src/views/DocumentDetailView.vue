@@ -1,75 +1,154 @@
 <template>
-  <div class="max-w-4xl mx-auto">
-    <div class="flex items-center mb-6">
-      <button
-        @click="$router.back()"
-        class="mr-4 px-4 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-      >
-        ← {{ $t('common.back') }}
-      </button>
-      <h1 class="text-2xl font-bold text-gray-900">{{ document.title }}</h1>
+  <div class="max-w-6xl mx-auto h-full flex flex-col min-h-0">
+    <!-- 顶部导航 -->
+    <div class="flex items-center justify-between mb-6 shrink-0">
+      <div class="flex items-center gap-4">
+        <button @click="$router.back()"
+          class="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors bg-white shadow-sm">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+          </svg>
+        </button>
+        <h1 class="text-2xl font-bold text-gray-900">{{ doc?.title || '文档详情' }}</h1>
+      </div>
+      <div class="flex gap-3">
+        <button @click="downloadDocument"
+          class="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors">
+          下载 HTML
+        </button>
+      </div>
     </div>
-    
-    <div class="bg-white rounded-xl shadow-sm p-8">
-      <div class="flex items-center justify-between mb-6 text-sm text-gray-600">
-        <span>{{ $t('generate.courseName') }}: {{ document.course }}</span>
-        <span>{{ $t('document.createTime') }}: {{ document.createdAt }}</span>
-      </div>
-      
-      <div class="space-y-8">
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.concept') }}</h2>
-          <div class="prose max-w-none text-gray-700" v-html="document.content.concept"></div>
-        </section>
-        
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.explanation') }}</h2>
-          <div class="prose max-w-none text-gray-700" v-html="document.content.explanation"></div>
-        </section>
-        
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.keyPoints') }}</h2>
-          <div class="prose max-w-none text-gray-700" v-html="document.content.keyPoints"></div>
-        </section>
-        
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.simulation') }}</h2>
-          <div class="bg-gray-100 rounded-lg p-8 text-center">
-            <p class="text-gray-500">[{{ $t('document.sections.simulation') }}]</p>
-          </div>
-        </section>
-        
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.summary') }}</h2>
-          <div class="prose max-w-none text-gray-700" v-html="document.content.summary"></div>
-        </section>
-        
-        <section>
-          <h2 class="text-xl font-bold text-gray-900 mb-4 pb-2 border-b">{{ $t('document.sections.exercises') }}</h2>
-          <div class="prose max-w-none text-gray-700" v-html="document.content.exercises"></div>
-        </section>
-      </div>
+
+    <!-- 加载状态 -->
+    <div v-if="loading" class="text-center py-12 flex-1">
+      <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent"></div>
+      <p class="mt-2 text-gray-500">加载中...</p>
+    </div>
+
+    <!-- 文档内容 - 使用 iframe 展示完整 HTML -->
+    <div v-else-if="doc" class="bg-white rounded-xl shadow-sm overflow-hidden flex-1 min-h-0">
+      <iframe 
+        ref="iframeRef"
+        class="w-full h-full border-0"
+        sandbox="allow-scripts allow-same-origin"
+      ></iframe>
+    </div>
+
+    <!-- 错误状态 -->
+    <div v-else class="text-center py-12 bg-white rounded-xl shadow-sm flex-1">
+      <p class="text-gray-500">文档不存在或已被删除</p>
+      <router-link to="/documents"
+        class="mt-4 inline-block px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+        返回文档列表
+      </router-link>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
-const route = useRoute()
+interface Document {
+  id: number
+  title: string
+  html_content: string
+  created_at: string
+}
 
-const document = ref({
-  id: route.params.id,
-  title: '牛顿第二定律',
-  course: '大学物理',
-  createdAt: '2026-03-19',
-  content: {
-    concept: '<p>牛顿第二定律指出，物体的加速度与作用力成正比，与物体质量成反比。</p><p class="font-bold text-center my-4 text-lg">F = ma</p>',
-    explanation: '<p>当一个力 F 作用在质量为 m 的物体上时，物体会产生加速度 a。这个加速度的方向与力的方向相同，大小与力的大小成正比，与物体质量成反比。</p>',
-    keyPoints: '<ul><li>力是产生加速度的原因</li><li>加速度方向与合力方向相同</li><li>质量是物体惯性的量度</li></ul>',
-    summary: '<p>牛顿第二定律是经典力学的核心，它定量地描述了力、质量和加速度之间的关系。</p>',
-    exercises: '<div class="space-y-4"><div><p class="font-medium">1. 一个质量为 2kg 的物体受到 10N 的力，求加速度。</p><p class="text-gray-600 mt-2">解：a = F/m = 10/2 = 5 m/s²</p></div></div>'
+const route = useRoute()
+const documentId = route.params.id as string
+
+const doc = ref<Document | null>(null)
+const loading = ref(true)
+const iframeRef = ref<HTMLIFrameElement | null>(null)
+
+const loadDocument = async () => {
+  loading.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/documents/${documentId}`, {
+      headers: token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' }
+    })
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+        throw new Error('登录已过期')
+      }
+      throw new Error(`API Error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    doc.value = data
+    
+    // 使用 setTimeout 确保 iframe 已经渲染
+    setTimeout(() => {
+      writeToIframe(data.html_content)
+    }, 100)
+  } catch (error) {
+    console.error('加载文档失败:', error)
+    doc.value = null
+  } finally {
+    loading.value = false
   }
+}
+
+const writeToIframe = (htmlContent: string) => {
+  if (!iframeRef.value || !htmlContent) {
+    console.error('iframe 或内容不存在')
+    return
+  }
+  
+  const iframe = iframeRef.value
+  
+  try {
+    // 使用 srcdoc 属性直接设置内容
+    iframe.srcdoc = htmlContent
+    console.log('文档已写入 iframe，内容长度:', htmlContent.length)
+  } catch (e) {
+    console.error('写入 iframe 失败:', e)
+    // 降级方案：使用传统方式
+    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document
+    if (iframeDoc) {
+      iframeDoc.open()
+      iframeDoc.write(htmlContent)
+      iframeDoc.close()
+    }
+  }
+}
+
+const downloadDocument = async () => {
+  if (!doc.value) return
+
+  try {
+    const token = localStorage.getItem('token')
+    const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/documents/${documentId}/download`, {
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    })
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status}`)
+    }
+
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const safeTitle = doc.value.title.replace(/[\\/:*?"<>|]/g, '_').trim() || 'document'
+    link.download = `${safeTitle}.html`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error('下载失败:', error)
+    alert('下载失败')
+  }
+}
+
+onMounted(() => {
+  loadDocument()
 })
 </script>

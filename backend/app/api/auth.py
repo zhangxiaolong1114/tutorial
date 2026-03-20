@@ -60,11 +60,14 @@ async def send_verification_code_endpoint(
         user = user_service.get_user_by_email(db, request.email)
         
         if request.purpose == "register" and user:
-            # 注册时用户已存在
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="该邮箱已注册"
-            )
+            # 注册时用户已存在，检查是否已验证
+            if user.is_verified:
+                # 真正已注册且已验证的用户
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该邮箱已注册"
+                )
+            # 未验证的用户（验证码过期等情况），允许重新发送验证码
         elif request.purpose in ["login", "reset"] and not user:
             # 登录或重置密码时用户不存在
             raise HTTPException(

@@ -35,6 +35,12 @@ const router = createRouter({
           meta: { requiresAuth: true }
         },
         {
+          path: 'outline/:id/edit',
+          name: 'outline-edit',
+          component: () => import('../views/OutlineEditView.vue'),
+          meta: { requiresAuth: true }
+        },
+        {
           path: 'documents',
           name: 'documents',
           component: () => import('../views/DocumentsView.vue'),
@@ -44,6 +50,12 @@ const router = createRouter({
           path: 'document/:id',
           name: 'document-detail',
           component: () => import('../views/DocumentDetailView.vue'),
+          meta: { requiresAuth: true }
+        },
+        {
+          path: 'tasks',
+          name: 'tasks',
+          component: () => import('../views/TasksView.vue'),
           meta: { requiresAuth: true }
         }
       ]

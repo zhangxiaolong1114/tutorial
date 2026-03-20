@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # JWT 配置
     SECRET_KEY: str = "your-secret-key-here"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7天有效期，减少频繁登录
     
     # SMTP 配置
     # Office 365 中国版 (由世纪互联运营)
@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     
     # 验证码配置
     VERIFICATION_CODE_EXPIRE_MINUTES: int = 5
+    
+    # AI API 配置
+    KIMI_API_KEY: str = ""
+    CLAUDE_API_KEY: str = ""
+    
+    # 文件存储配置
+    STORAGE_TYPE: str = "database"  # database 或 filesystem
+    STORAGE_PATH: str = "./storage/documents"  # 文件系统存储路径
     
     class Config:
         env_file = ".env"

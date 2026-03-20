@@ -1,17 +1,31 @@
 """
 FastAPI 应用入口
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.api import auth
+from app.api import auth, outline, document
 from app.core.database import engine, Base
+from app.services.task_queue_service import task_queue_service
 
 settings = get_settings()
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时启动任务队列
+    await task_queue_service.start(num_workers=2)
+    yield
+    # 关闭时停止任务队列
+    await task_queue_service.stop()
+
 
 # 创建 FastAPI 应用实例
 app = FastAPI(
@@ -20,6 +34,7 @@ app = FastAPI(
     debug=settings.DEBUG,
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
+    lifespan=lifespan,
 )
 
 # 配置 CORS
@@ -33,6 +48,8 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(auth.router)
+app.include_router(outline.router)
+app.include_router(document.router)
 
 
 @app.get("/")

@@ -1,0 +1,281 @@
+/* 文档内容共享样式 - 用于平台预览和下载的 HTML */
+
+:root {
+  --primary-color: #3b82f6;
+  --secondary-color: #8b5cf6;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --danger-color: #ef4444;
+  --bg-color: #f8fafc;
+  --card-bg: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.document-container {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.8;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.document-wrapper {
+  max-width: 900px;
+  margin: 0 auto;
+  background: var(--card-bg);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+
+.document-header {
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  color: white;
+  padding: 40px;
+  text-align: center;
+}
+
+.document-header h1 {
+  font-size: 2.5em;
+  margin-bottom: 10px;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+  border: none;
+  color: white;
+}
+
+.document-header .subtitle {
+  font-size: 1.1em;
+  opacity: 0.9;
+}
+
+.document-body {
+  padding: 40px;
+}
+
+.document-body section {
+  margin-bottom: 40px;
+  padding: 30px;
+  background: var(--bg-color);
+  border-radius: 12px;
+  border-left: 5px solid var(--primary-color);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.document-body section:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+}
+
+.document-body section:nth-child(2) { border-left-color: var(--secondary-color); }
+.document-body section:nth-child(3) { border-left-color: var(--success-color); }
+.document-body section:nth-child(4) { border-left-color: var(--warning-color); }
+.document-body section:nth-child(5) { border-left-color: var(--danger-color); }
+
+.document-body h2 {
+  color: var(--text-primary);
+  font-size: 1.8em;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.document-body h3 {
+  color: var(--primary-color);
+  font-size: 1.4em;
+  margin: 25px 0 15px;
+}
+
+.document-body h4 {
+  color: var(--text-secondary);
+  font-size: 1.2em;
+  margin: 20px 0 10px;
+}
+
+.document-body p {
+  color: var(--text-primary);
+  margin-bottom: 15px;
+  text-align: justify;
+}
+
+.document-body ul, .document-body ol {
+  margin: 15px 0;
+  padding-left: 30px;
+}
+
+.document-body li {
+  margin-bottom: 10px;
+  color: var(--text-primary);
+}
+
+.document-body strong {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.document-body code {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 0.9em;
+}
+
+.document-body pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 20px 0;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.document-body pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.document-body blockquote {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 20px;
+  border-radius: 8px;
+  margin: 20px 0;
+  font-style: italic;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.document-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.document-body th {
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  color: white;
+  padding: 15px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.document-body td {
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.document-body tr:nth-child(even) {
+  background: var(--bg-color);
+}
+
+.document-body tr:hover {
+  background: #e0e7ff;
+}
+
+/* 仿真区域样式 */
+.document-body canvas {
+  display: block;
+  max-width: 100%;
+  margin: 20px auto;
+  border: 3px solid var(--primary-color);
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+}
+
+.document-body .simulation-controls {
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  padding: 20px;
+  border-radius: 12px;
+  margin: 20px 0;
+}
+
+.document-body input[type="range"] {
+  width: 100%;
+  margin: 10px 0;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.document-body input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.document-body button {
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1em;
+  font-weight: 600;
+  margin: 5px;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+}
+
+.document-body button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6);
+}
+
+/* 公式样式 */
+.document-body .math-display {
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  padding: 20px;
+  border-radius: 12px;
+  margin: 20px 0;
+  text-align: center;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* 提示框 */
+.document-body .tip {
+  background: linear-gradient(135deg, #d4fc79 0%, #96e6a1 100%);
+  color: #166534;
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin: 20px 0;
+  border-left: 5px solid var(--success-color);
+}
+
+.document-body .warning {
+  background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
+  color: #92400e;
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin: 20px 0;
+  border-left: 5px solid var(--warning-color);
+}
+
+.document-footer {
+  background: var(--bg-color);
+  padding: 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}

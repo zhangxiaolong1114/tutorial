@@ -21,6 +21,16 @@
         </svg>
         {{ $t('nav.documents') }}
       </router-link>
+      <router-link
+        to="/tasks"
+        class="flex items-center px-4 py-3 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+        :class="{ 'bg-blue-50 text-blue-600': $route.path === '/tasks' }"
+      >
+        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+        </svg>
+        任务中心
+      </router-link>
     </nav>
   </aside>
 </template>
