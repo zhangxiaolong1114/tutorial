@@ -101,27 +101,9 @@ const viewDocument = (id: number) => {
 
 const downloadDocument = async (id: number) => {
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/documents/${id}/download`, {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    })
-
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`)
-    }
-
-    const blob = await response.blob()
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    // 获取文档标题作为文件名
     const doc = documents.value.find(d => d.id === id)
     const safeTitle = doc?.title?.replace(/[\\/:*?"<>|]/g, '_').trim() || `document-${id}`
-    link.download = `${safeTitle}.html`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
+    await api.download(`/documents/${id}/download`, `${safeTitle}.html`)
   } catch (error) {
     console.error('下载失败:', error)
     alert('下载失败')

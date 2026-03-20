@@ -27,26 +27,96 @@ apiClient.interceptors.request.use(
   }
 )
 
-// 响应拦截器 - 处理错误
+// 是否正在刷新 token 的标志
+let isRefreshing = false
+// 等待刷新完成的请求队列
+let refreshSubscribers: ((token: string) => void)[] = []
+
+// 订阅 token 刷新
+function subscribeTokenRefresh(callback: (token: string) => void) {
+  refreshSubscribers.push(callback)
+}
+
+// 通知所有订阅者新 token
+function onTokenRefreshed(newToken: string) {
+  refreshSubscribers.forEach(callback => callback(newToken))
+  refreshSubscribers = []
+}
+
+// 响应拦截器 - 处理错误和自动刷新
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // 401 错误处理：只在访问需要认证的接口时跳转登录页
-    // 登录接口本身的 401（密码错误）不跳转
-    if (error.response?.status === 401) {
-      const requestUrl = error.config?.url || ''
-      const isAuthEndpoint = requestUrl.includes('/auth/login') || 
-                            requestUrl.includes('/auth/register') ||
-                            requestUrl.includes('/auth/verify-login') ||
-                            requestUrl.includes('/auth/reset-password')
-      
-      // 如果不是认证接口的 401，则清除 token 并跳转
-      if (!isAuthEndpoint) {
-        localStorage.removeItem('token')
-        window.location.href = '/login'
-      }
+  async (error) => {
+    const originalRequest = error.config
+    
+    // 如果不是 401 错误，直接返回错误
+    if (error.response?.status !== 401) {
+      return Promise.reject(error)
     }
-    return Promise.reject(error)
+    
+    const requestUrl = originalRequest?.url || ''
+    const isAuthEndpoint = requestUrl.includes('/auth/login') || 
+                          requestUrl.includes('/auth/register') ||
+                          requestUrl.includes('/auth/verify-login') ||
+                          requestUrl.includes('/auth/reset-password') ||
+                          requestUrl.includes('/auth/refresh')
+    
+    // 认证接口的 401 直接返回错误（如密码错误）
+    if (isAuthEndpoint) {
+      return Promise.reject(error)
+    }
+    
+    // 已经在刷新中，将请求加入队列等待
+    if (isRefreshing) {
+      return new Promise((resolve) => {
+        subscribeTokenRefresh((newToken: string) => {
+          originalRequest.headers.Authorization = `Bearer ${newToken}`
+          resolve(apiClient(originalRequest))
+        })
+      })
+    }
+    
+    // 尝试刷新 token
+    isRefreshing = true
+    
+    try {
+      const refreshTokenValue = localStorage.getItem('refreshToken')
+      
+      if (!refreshTokenValue) {
+        // 没有刷新令牌，跳转登录
+        localStorage.removeItem('token')
+        localStorage.removeItem('refreshToken')
+        window.location.href = '/login'
+        return Promise.reject(error)
+      }
+      
+      // 调用刷新接口
+      const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+        refresh_token: refreshTokenValue
+      })
+      
+      const { access_token } = response.data
+      
+      // 保存新 token
+      localStorage.setItem('token', access_token)
+      
+      // 更新当前请求的 header
+      originalRequest.headers.Authorization = `Bearer ${access_token}`
+      
+      // 通知队列中的请求
+      onTokenRefreshed(access_token)
+      
+      // 重试原请求
+      return apiClient(originalRequest)
+    } catch (refreshError) {
+      // 刷新失败，清除所有 token 并跳转登录
+      localStorage.removeItem('token')
+      localStorage.removeItem('refreshToken')
+      window.location.href = '/login'
+      return Promise.reject(refreshError)
+    } finally {
+      isRefreshing = false
+    }
   }
 )
 
@@ -81,6 +151,7 @@ export interface VerifyLoginRequest {
 // 认证响应
 export interface AuthResponse {
   access_token: string
+  refresh_token: string
   token_type: string
 }
 
@@ -88,6 +159,12 @@ export interface AuthResponse {
 export interface VerificationRequiredResponse {
   require_verification: true
   message: string
+}
+
+// 刷新令牌响应
+export interface RefreshTokenResponse {
+  access_token: string
+  token_type: string
 }
 
 // API 函数
@@ -102,6 +179,14 @@ export const authApi = {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
       }
+    })
+    return response.data
+  },
+
+  // 刷新访问令牌
+  refreshToken: async (refreshToken: string): Promise<RefreshTokenResponse> => {
+    const response: AxiosResponse<RefreshTokenResponse> = await apiClient.post('/auth/refresh', {
+      refresh_token: refreshToken
     })
     return response.data
   },

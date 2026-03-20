@@ -555,7 +555,6 @@ class AIService:
     <div class="container">
         <div class="header">
             <h1>{title}</h1>
-            <div class="subtitle">AI 生成的教学文档</div>
         </div>
         <div class="content">
             {body_content}

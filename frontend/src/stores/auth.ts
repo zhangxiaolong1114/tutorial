@@ -6,6 +6,7 @@ export const useAuthStore = defineStore('auth', () => {
   // State
   const user = ref<User | null>(null)
   const token = ref<string | null>(localStorage.getItem('token'))
+  const refreshToken = ref<string | null>(localStorage.getItem('refreshToken'))
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -28,7 +29,9 @@ export const useAuthStore = defineStore('auth', () => {
       // 正常登录成功
       if ('access_token' in response) {
         token.value = response.access_token
+        refreshToken.value = response.refresh_token
         localStorage.setItem('token', response.access_token)
+        localStorage.setItem('refreshToken', response.refresh_token)
 
         // 登录成功后获取用户信息
         await fetchUser()
@@ -59,7 +62,9 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const response = await authApi.verifyLogin(data)
       token.value = response.access_token
+      refreshToken.value = response.refresh_token
       localStorage.setItem('token', response.access_token)
+      localStorage.setItem('refreshToken', response.refresh_token)
 
       // 登录成功后获取用户信息
       await fetchUser()
@@ -80,7 +85,9 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const response = await authApi.loginWithVerification(data)
       token.value = response.access_token
+      refreshToken.value = response.refresh_token
       localStorage.setItem('token', response.access_token)
+      localStorage.setItem('refreshToken', response.refresh_token)
 
       // 登录成功后获取用户信息
       await fetchUser()
@@ -100,7 +107,9 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const response = await authApi.register(data)
       token.value = response.access_token
+      refreshToken.value = response.refresh_token
       localStorage.setItem('token', response.access_token)
+      localStorage.setItem('refreshToken', response.refresh_token)
 
       // 注册成功后获取用户信息
       await fetchUser()
@@ -116,7 +125,9 @@ export const useAuthStore = defineStore('auth', () => {
   const logout = () => {
     user.value = null
     token.value = null
+    refreshToken.value = null
     localStorage.removeItem('token')
+    localStorage.removeItem('refreshToken')
   }
 
   const fetchUser = async () => {
@@ -161,6 +172,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user,
     token,
+    refreshToken,
     loading,
     error,
     isAuthenticated,

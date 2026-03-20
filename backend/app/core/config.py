@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     # JWT 配置
     SECRET_KEY: str = "your-secret-key-here"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7天有效期，减少频繁登录
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # Access Token 30分钟有效期
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 10080  # Refresh Token 7天有效期
     
     # SMTP 配置
     # Office 365 中国版 (由世纪互联运营)

@@ -74,6 +74,18 @@ class LoginWithVerificationCode(BaseModel):
 class LoginResponse(BaseModel):
     """登录响应模型"""
     access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshTokenRequest(BaseModel):
+    """刷新 Token 请求模型"""
+    refresh_token: str
+
+
+class RefreshTokenResponse(BaseModel):
+    """刷新 Token 响应模型"""
+    access_token: str
     token_type: str = "bearer"
 
 

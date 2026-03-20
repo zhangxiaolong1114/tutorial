@@ -12,12 +12,12 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import create_access_token
+from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.schemas.user import (
     UserCreate, UserResponse, Token,
     VerificationCodeRequest, VerificationCodeResponse,
     LoginWithVerificationCode, LoginResponse, VerificationRequiredResponse,
-    ResetPasswordRequest
+    ResetPasswordRequest, RefreshTokenRequest, RefreshTokenResponse
 )
 from app.services import user_service
 from app.services.user_service import (
@@ -211,10 +211,15 @@ def login(
             ip_address=client_ip
         )
     
-    # 生成访问令牌
+    # 生成访问令牌和刷新令牌
     access_token = create_access_token(subject=user.id)
+    refresh_token = create_refresh_token(subject=user.id)
     
-    return LoginResponse(access_token=access_token, token_type="bearer")
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer"
+    )
 
 
 @router.post("/verify-login", response_model=LoginResponse)
@@ -276,10 +281,15 @@ async def verify_login(
     user.verification_code_expires = None
     db.commit()
     
-    # 生成访问令牌
+    # 生成访问令牌和刷新令牌
     access_token = create_access_token(subject=user.id)
+    refresh_token = create_refresh_token(subject=user.id)
     
-    return LoginResponse(access_token=access_token, token_type="bearer")
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer"
+    )
 
 
 @router.post("/send-login-verification-code", response_model=VerificationCodeResponse)
@@ -373,3 +383,56 @@ def reset_password(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"重置密码失败: {str(e)}"
         )
+
+
+@router.post("/refresh", response_model=RefreshTokenResponse)
+def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    刷新访问令牌
+    
+    - **refresh_token**: 刷新令牌
+    
+    使用刷新令牌获取新的访问令牌，刷新令牌本身也会更新
+    """
+    # 解码刷新令牌
+    payload = decode_token(request.refresh_token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的刷新令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 检查令牌类型
+    token_type = payload.get("type")
+    if token_type != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的令牌类型",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的刷新令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 验证用户是否存在且活跃
+    user = user_service.get_user_by_id(db, int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在或已被禁用",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 生成新的访问令牌
+    new_access_token = create_access_token(subject=user.id)
+    
+    return RefreshTokenResponse(
+        access_token=new_access_token,
+        token_type="bearer"
+    )

@@ -47,7 +47,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import api from '../api/index'
 
 interface Document {
   id: number
@@ -57,6 +58,7 @@ interface Document {
 }
 
 const route = useRoute()
+const router = useRouter()
 const documentId = route.params.id as string
 
 const doc = ref<Document | null>(null)
@@ -66,30 +68,20 @@ const iframeRef = ref<HTMLIFrameElement | null>(null)
 const loadDocument = async () => {
   loading.value = true
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/documents/${documentId}`, {
-      headers: token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' }
-    })
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        localStorage.removeItem('token')
-        window.location.href = '/login'
-        throw new Error('登录已过期')
-      }
-      throw new Error(`API Error: ${response.status}`)
-    }
-
-    const data = await response.json()
+    // 使用统一的 api 模块，它会自动处理 token 和 401 跳转
+    const data = await api.get<Document>(`/documents/${documentId}`)
     doc.value = data
     
     // 使用 setTimeout 确保 iframe 已经渲染
     setTimeout(() => {
       writeToIframe(data.html_content)
     }, 100)
-  } catch (error) {
+  } catch (error: any) {
     console.error('加载文档失败:', error)
-    doc.value = null
+    // api 模块已经处理了 401 跳转，这里只需要处理其他错误
+    if (error.message?.includes('404')) {
+      doc.value = null
+    }
   } finally {
     loading.value = false
   }
@@ -123,25 +115,8 @@ const downloadDocument = async () => {
   if (!doc.value) return
 
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/documents/${documentId}/download`, {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    })
-
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`)
-    }
-
-    const blob = await response.blob()
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
     const safeTitle = doc.value.title.replace(/[\\/:*?"<>|]/g, '_').trim() || 'document'
-    link.download = `${safeTitle}.html`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
+    await api.download(`/documents/${documentId}/download`, `${safeTitle}.html`)
   } catch (error) {
     console.error('下载失败:', error)
     alert('下载失败')

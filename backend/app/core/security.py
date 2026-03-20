@@ -43,7 +43,28 @@ def create_access_token(subject: int | str, expires_delta: timedelta | None = No
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    to_encode = {"exp": expire, "sub": str(subject)}
+    to_encode = {"exp": expire, "sub": str(subject), "type": "access"}
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+
+def create_refresh_token(subject: int | str, expires_delta: timedelta | None = None) -> str:
+    """
+    创建 JWT 刷新令牌
+    
+    Args:
+        subject: 令牌主题（通常是用户ID）
+        expires_delta: 过期时间增量，默认使用配置中的值
+    
+    Returns:
+        JWT 刷新令牌字符串
+    """
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
