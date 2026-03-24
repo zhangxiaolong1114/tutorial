@@ -27,8 +27,8 @@ def format_datetime(dt: datetime) -> str:
     """统一格式化日期时间，添加 UTC 时区标识"""
     if not dt:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    # if dt.tzinfo is None:
+    #     dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
 
 
@@ -39,6 +39,9 @@ class OutlineGenerateRequest(BaseModel):
     course: str = Field(..., min_length=1, max_length=100, description="课程名称")
     knowledge_point: str = Field(..., min_length=1, max_length=200, description="知识点")
     difficulty: str = Field(default="medium", description="难度等级: easy, medium, hard")
+    
+    # 生成配置（可选，不传则使用默认配置）
+    config: Optional[dict] = Field(default=None, description="生成配置")
 
 
 class SectionUpdate(BaseModel):
@@ -87,6 +90,7 @@ class DocumentResponse(BaseModel):
 class GenerateDocRequest(BaseModel):
     """生成文档请求"""
     title: Optional[str] = Field(None, description="文档标题，默认使用大纲标题")
+    config: Optional[dict] = Field(None, description="生成配置（可选，覆盖大纲保存的配置）")
 
 
 class TaskResponse(BaseModel):
@@ -179,9 +183,6 @@ def get_task_status(
         """格式化日期时间，添加 UTC 时区标识"""
         if not dt:
             return None
-        if dt.tzinfo is None:
-            from datetime import timezone
-            dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat()
 
     return {
@@ -223,7 +224,8 @@ def generate_outline(
             params={
                 "course": request.course,
                 "knowledge_point": request.knowledge_point,
-                "difficulty": request.difficulty
+                "difficulty": request.difficulty,
+                "config": request.config  # 传递配置
             }
         )
 
@@ -427,14 +429,20 @@ def generate_document(
 
     try:
         # 创建异步任务
+        task_params = {
+            "outline_id": outline_id,
+            "title": request.title if request else None
+        }
+
+        # 如果请求中包含配置，传递给任务
+        if request and request.config:
+            task_params["config"] = request.config
+
         task = task_queue_service.create_task(
             db=db,
             user_id=current_user.id,
             task_type=TaskType.GENERATE_DOCUMENT,
-            params={
-                "outline_id": outline_id,
-                "title": request.title if request else None
-            }
+            params=task_params
         )
 
         return {

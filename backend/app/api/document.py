@@ -29,8 +29,8 @@ def format_datetime(dt: datetime) -> str:
     """统一格式化日期时间，添加 UTC 时区标识"""
     if not dt:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    # if dt.tzinfo is None:
+    #     dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
 
 

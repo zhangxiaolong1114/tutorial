@@ -180,6 +180,8 @@ async function downloadFile(endpoint: string, filename: string): Promise<void> {
   window.URL.revokeObjectURL(url)
 }
 
+export { generationConfigApi } from './generationConfig'
+
 export const api = {
   get: <T>(endpoint: string, options?: RequestOptions) => 
     request<T>(endpoint, { ...options, method: 'GET' }),

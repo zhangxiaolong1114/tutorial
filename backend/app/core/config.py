@@ -38,8 +38,15 @@ class Settings(BaseSettings):
     
     # AI API 配置
     KIMI_API_KEY: str = ""
+    
+    # Claude API 配置（可选，用于仿真生成）
     CLAUDE_API_KEY: str = ""
-    CLAUDE_MODEL: str = ""
+    CLAUDE_BASE_URL: str = "https://xiaoai.plus/v1"  # Claude API 基础地址
+    CLAUDE_MODEL: str = "claude-opus-4-5-20251101"  # 默认模型
+    
+    # 仿真生成配置
+    SIMULATION_PROVIDER: str = "kimi"  # 可选: "kimi" 或 "claude"
+    SIMULATION_MODEL: str = "moonshot-v1-128k"  # Kimi 模型（当 provider=kimi 时使用）
     
     # 文件存储配置
     STORAGE_TYPE: str = "database"  # database 或 filesystem

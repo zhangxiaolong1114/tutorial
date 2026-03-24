@@ -12,7 +12,6 @@
 
 ### ✅ Phase 1: 基础框架 (已完成)
 
-
 | 任务                           | 状态  | 备注                    |
 | ---------------------------- | --- | --------------------- |
 | 需求文档                         | ✅   | requirements.md       |
@@ -22,11 +21,9 @@
 | 样式修复 (Tailwind v4)           | ✅   | @tailwindcss/vite 插件  |
 | 国际化 (i18n)                   | ✅   | 中文/英文切换               |
 
-
 ---
 
 ### ✅ Phase 2: 用户系统 (已完成)
-
 
 | 任务                    | 优先级 | 状态  | 备注                                      |
 | --------------------- | --- | --- | --------------------------------------- |
@@ -39,7 +36,6 @@
 | 2.7 多设备登录支持           | P1  | ✅   | `backend/app/models/user_device.py`     |
 | 2.8 忘记密码              | P1  | ✅   | `backend/app/api/auth.py`               |
 | 2.9 Token 刷新机制        | P1  | ✅   | 双 Token 架构，自动静默刷新                       |
-
 
 **技术决策:**
 
@@ -56,7 +52,6 @@
 ---
 
 ### ✅ Phase 3: 核心生成 (已完成)
-
 
 | 任务               | 优先级 | 状态  | 文件                                             |
 | ---------------- | --- | --- | ---------------------------------------------- |
@@ -88,7 +83,6 @@
 | 3.26 公式渲染修复      | P1  | ✅   | 转换为 $ $$，KaTeX 配置修复                            |
 | 3.27 时区统一        | P1  | ✅   | 所有模型时间字段统一使用 UTC                               |
 
-
 **技术决策:**
 
 - AI 模型: Kimi (Moonshot)
@@ -100,69 +94,143 @@
 
 ---
 
-### 🔄 Phase 4: 仿真系统 (部分完成)
+### ✅ Phase 4: 配置化生成系统 (已完成)
 
+| 任务 | 优先级 | 状态 | 文件 | 说明 |
+|------|--------|------|------|------|
+| 4.1 配置化生成设计 | P0 | ✅ | `doc/design/configurable-generation.md` | 13个配置字段设计 |
+| 4.2 分层 Prompt 工程 | P0 | ✅ | `app/core/prompt_templates.py` | 5层架构：角色/结构/深度/增强/约束 |
+| 4.3 配置模型设计 | P0 | ✅ | `app/models/generation_config.py` | 配置数据模型 |
+| 4.4 配置 API 开发 | P0 | ✅ | `app/api/generation_config.py` | CRUD 接口 |
+| 4.5 配置化大纲生成 | P0 | ✅ | `app/services/ai_service.py` | `generate_outline_with_config` |
+| 4.6 配置化章节生成 | P0 | ✅ | `app/services/ai_service.py` | `generate_section_content_with_config` |
+| 4.7 上下文连贯性 | P0 | ✅ | `app/services/task_queue_service.py` | 串行生成，传递前一章摘要 |
+| 4.8 自动续生成 | P0 | ✅ | `app/services/ai_service.py` | 检测截断，保持上下文连续 |
+| 4.9 内容完整性验证 | P0 | ✅ | `app/services/ai_service.py` | JSON/HTML/仿真代码结构检查 |
+| 4.10 前端配置界面 | P1 | ✅ | `frontend/src/views/GenerateView.vue` | 配置表单集成 |
 
-| 任务            | 优先级 | 状态  | 文件                                           |
-| ------------- | --- | --- | -------------------------------------------- |
-| 4.1 仿真代码生成    | P1  | ✅   | `backend/app/services/ai_service.py`         |
-| 4.2 仿真代码嵌入    | P1  | ✅   | `backend/app/services/task_queue_service.py` |
-| 4.3 Canvas 渲染 | P1  | ✅   | 浏览器原生支持                                      |
-| 4.4 仿真代码沙箱    | P2  | ⏳   | 待开发（安全考虑）                                    |
-| 4.5 更多学科仿真    | P2  | ⏳   | 物理、电路、数学等                                    |
+**技术亮点:**
 
+- **13个配置字段**:
+  - 语气风格: formal/casual/rigorous
+  - 目标受众: undergraduate/graduate/engineer/high_school
+  - 教学风格: progressive/case_driven/problem_based/comparative
+  - 难度等级: beginner/intermediate/advanced
+  - 内容粒度: brief/standard/detailed
+  - 公式详细度: conclusion_only/derivation/full_proof
+  - 仿真类型: animation/interactive
+  - 代码语言: python/java/cpp/pseudocode/none
+  - 配图需求: true/false
+  - 输出格式: lecture/ppt_outline/lab_manual/cheatsheet
+  - 引用规范: none/simple/academic
+  - 互动元素: thinking/exercise/quiz/none
+
+- **分层 Prompt 架构**:
+  ```
+  第一层: 角色定义（风格层）- 12种角色组合
+  第二层: 内容结构（结构层）- 4种教学结构
+  第三层: 深度控制（深度层）- 9种公式处理组合
+  第四层: 增强指令（增强层）- 代码/配图
+  第五层: 统一约束（约束层）- 格式/长度/公式分隔符
+  ```
+
+- **上下文传递机制**:
+  ```python
+  context = {
+      "outline_structure": "大纲结构",
+      "position": {"current_index": i, "total": n, "prev_title": "", "next_title": ""},
+      "prev_summary": {"title": "", "content": ""},
+      "generated_sections": "已生成章节列表"
+  }
+  ```
 
 ---
 
-### 🔄 Phase 5: 文档管理 (部分完成)
+### 🔄 Phase 4.5: 仿真系统优化 (进行中)
 
+| 任务 | 优先级 | 状态 | 文件 | 说明 |
+|------|--------|------|------|------|
+| 4.5.1 仿真代码生成 | P1 | ✅ | `app/services/ai_service.py` | `generate_simulation_code_with_config` |
+| 4.5.2 仿真代码嵌入 | P1 | ✅ | `app/services/task_queue_service.py` | 嵌入 HTML 文档 |
+| 4.5.3 仿真代码完整性修复 | P0 | ✅ | `app/services/ai_service.py` | max_tokens 24000 + 续生成机制 |
+| 4.5.4 仿真代码提取修复 | P0 | ✅ | `app/services/ai_service.py` | 处理外部 script/style |
+| 4.5.5 仿真与文档关联性 | P0 | ✅ | `app/core/prompt_templates.py` | 传递上下文，强制公式一致 |
+| 4.5.6 章节衔接优化 | P1 | ✅ | `app/core/prompt_templates.py` | 移除生硬衔接要求 |
+| 4.5.7 标签验证修复 | P1 | ✅ | `app/services/ai_service.py` | 放宽 section 标签检查 |
+| 4.5.8 交互事件绑定 | P1 | ✅ | `app/core/prompt_templates.py` | 明确 oninput 要求 |
+| 4.5.9 k2.5 模型兼容 | P0 | ✅ | `app/services/ai_service.py` | temperature=1.0 自动设置 |
+| 4.5.10 仿真交互稳定性 | P1 | 🔄 | `app/core/prompt_templates.py` | 持续优化中 |
+| 4.5.11 更多学科仿真 | P2 | ⏳ | - | 物理、电路、数学等 |
+| 4.5.12 仿真代码沙箱 | P2 | ⏳ | - | 安全执行环境 |
 
-| 任务           | 优先级 | 状态  | 文件                                          |
-| ------------ | --- | --- | ------------------------------------------- |
-| 5.1 文档列表 API | P2  | ✅   | `backend/app/api/document.py`               |
-| 5.2 文档详情 API | P2  | ✅   | `backend/app/api/document.py`               |
-| 5.3 前端文档列表   | P2  | ✅   | `frontend/src/views/DocumentsView.vue`      |
-| 5.4 前端文档详情   | P2  | ✅   | `frontend/src/views/DocumentDetailView.vue` |
-| 5.5 局部修改功能   | P2  | ⏳   | 待开发                                         |
-| 5.6 导出 PDF   | P3  | ⏳   | 待开发                                         |
+**已修复问题:**
 
+1. ✅ **代码截断问题**: max_tokens 8192 → 24000，启用续生成机制
+2. ✅ **提取失败问题**: 自动将外部 script/style 移到容器内
+3. ✅ **关联性不足**: Prompt 添加上下文信息，强制使用文档公式
+4. ✅ **衔接生硬**: 移除"正如我们在XX章讲到的"等刻意引用
+5. ✅ **标签不匹配**: 放宽验证，只检查基本结构
+6. ✅ **交互不工作**: 明确要求 oninput 事件，提供示例代码
+7. ✅ **k2.5 兼容**: 自动设置 temperature=1.0
+
+**待解决问题:**
+
+1. 🔄 仿真交互能力不稳定（需要继续优化 Prompt）
+2. 🔄 公式渲染偶发问题
+3. ⏳ 仿真代码沙箱（安全）
+
+---
+
+### 🔄 Phase 5: 文档管理增强 (部分完成)
+
+| 任务 | 优先级 | 状态 | 文件 |
+|------|--------|------|------|
+| 5.1 文档列表 API | P2 | ✅ | `backend/app/api/document.py` |
+| 5.2 文档详情 API | P2 | ✅ | `backend/app/api/document.py` |
+| 5.3 前端文档列表 | P2 | ✅ | `frontend/src/views/DocumentsView.vue` |
+| 5.4 前端文档详情 | P2 | ✅ | `frontend/src/views/DocumentDetailView.vue` |
+| 5.5 局部修改功能 | P2 | ⏳ | 待开发 |
+| 5.6 导出 PDF | P3 | ⏳ | 待开发 |
+| 5.7 文档版本历史 | P3 | ⏳ | 待开发 |
 
 ---
 
 ### ⏳ Phase 6: 付费系统 (未开始)
 
-
-| 任务         | 优先级 | 状态  | 预估时间 |
-| ---------- | --- | --- | ---- |
-| 6.1 会员模型   | P2  | ⏳   | 2h   |
-| 6.2 生成次数限制 | P2  | ⏳   | 2h   |
-| 6.3 支付集成   | P3  | ⏳   | 4h   |
-| 6.4 前端会员页面 | P3  | ⏳   | 2h   |
-
+| 任务 | 优先级 | 状态 | 预估时间 |
+|------|--------|------|----------|
+| 6.1 会员模型 | P2 | ⏳ | 2h |
+| 6.2 生成次数限制 | P2 | ⏳ | 2h |
+| 6.3 支付集成（微信） | P3 | ⏳ | 4h |
+| 6.4 前端会员页面 | P3 | ⏳ | 2h |
 
 **定价策略:**
 
-
-| 类型   | 权益        | 价格    |
-| ---- | --------- | ----- |
-| 免费用户 | 每月 3 次生成  | 免费    |
-| 会员   | 每月 50 次生成 | ¥68/月 |
-| 超额   | 额外生成      | ¥2/次  |
-
+| 类型 | 权益 | 价格 |
+|------|------|------|
+| 免费用户 | 每月 3 次生成 | 免费 |
+| 会员 | 每月 50 次生成 | ¥68/月 |
+| 超额 | 额外生成 | ¥2/次 |
 
 ---
 
 ## 技术栈
 
+| 层级 | 技术 |
+|------|------|
+| 前端 | Vue3 + TypeScript + Vite + Tailwind CSS |
+| 后端 | Python + FastAPI + SQLAlchemy 2.0 |
+| 数据库 | PostgreSQL (生产) / SQLite (开发) |
+| AI | Kimi k2.5 (Moonshot) |
+| 部署 | Docker + Docker Compose |
 
-| 层级  | 技术                                      |
-| --- | --------------------------------------- |
-| 前端  | Vue3 + TypeScript + Vite + Tailwind CSS |
-| 后端  | Python + FastAPI + SQLAlchemy 2.0       |
-| 数据库 | PostgreSQL (生产) / SQLite (开发)           |
-| AI  | Kimi (Moonshot)                         |
-| 部署  | Docker + Docker Compose                 |
-
+**AI 配置:**
+```python
+model = "kimi-k2.5"
+max_tokens = 24000  # 支持最大 65535
+temperature = 1.0   # k2.5 只支持 temperature=1
+context_window = 256000
+```
 
 ---
 
@@ -173,55 +241,23 @@ tutorial/
 ├── doc/                          # 文档
 │   ├── requirements.md           # 需求文档
 │   ├── ARCHITECTURE.md           # 技术架构说明
-│   └── tasks.md                  # 任务清单 (本文件)
+│   ├── tasks.md                  # 任务清单 (本文件)
+│   └── progress.md               # 项目进度文档
 ├── backend/                      # 后端
 │   ├── app/
 │   │   ├── api/                  # API 路由
-│   │   │   ├── auth.py          # 认证接口
-│   │   │   ├── outline.py       # 大纲/任务接口
-│   │   │   └── document.py      # 文档接口
 │   │   ├── core/                 # 核心配置
-│   │   │   ├── config.py        # 应用配置
-│   │   │   ├── database.py      # 数据库
-│   │   │   └── security.py      # JWT 工具
+│   │   │   ├── prompt_templates.py  # 分层 Prompt 配置
+│   │   │   └── ...
 │   │   ├── models/               # 数据模型
-│   │   │   ├── user.py          # 用户
-│   │   │   ├── user_device.py   # 设备
-│   │   │   ├── outline.py       # 大纲
-│   │   │   ├── document.py      # 文档
-│   │   │   └── task_queue.py    # 任务队列
+│   │   │   ├── generation_config.py # 配置模型
+│   │   │   └── ...
 │   │   └── services/             # 业务服务
-│   │       ├── ai_service.py    # AI 生成
-│   │       ├── task_queue_service.py # 任务队列
-│   │       ├── file_storage_service.py # 文件存储
-│   │       ├── user_service.py  # 用户
-│   │       └── email_service.py # 邮件
-│   └── Dockerfile
+│   │       ├── ai_service.py     # AI 生成（含配置化方法）
+│   │       └── task_queue_service.py # 任务队列（含上下文传递）
+│   └── ...
 ├── frontend/                     # 前端
-│   ├── src/
-│   │   ├── api/                  # API 客户端
-│   │   │   ├── index.ts         # 基础请求
-│   │   │   ├── auth.ts          # 认证 API
-│   │   │   └── outline.ts       # 大纲/任务 API
-│   │   ├── components/           # 组件
-│   │   │   ├── Layout.vue       # 布局
-│   │   │   ├── Header.vue       # 头部
-│   │   │   └── Sidebar.vue      # 侧边栏
-│   │   ├── router/               # 路由
-│   │   │   └── index.ts         # 路由配置
-│   │   ├── stores/               # 状态管理
-│   │   │   └── auth.ts          # 认证状态
-│   │   ├── views/                # 页面
-│   │   │   ├── LoginView.vue    # 登录
-│   │   │   ├── RegisterView.vue # 注册
-│   │   │   ├── GenerateView.vue # 生成大纲
-│   │   │   ├── OutlineEditView.vue # 编辑大纲
-│   │   │   ├── DocumentDetailView.vue # 文档详情
-│   │   │   ├── DocumentsView.vue # 文档列表
-│   │   │   └── TasksView.vue    # 任务中心
-│   │   └── types/                # 类型定义
-│   │       └── outline.ts       # 大纲类型
-│   └── Dockerfile
+│   └── ...
 └── docker-compose.yml            # Docker 编排
 ```
 
@@ -229,45 +265,28 @@ tutorial/
 
 ## 下一步计划
 
-### 短期 (1-2 周)
+### 本周 (3月24日-3月30日)
+1. 继续优化仿真 Prompt，提高交互稳定性
+2. 测试更多学科仿真效果
+3. 开始 Phase 5 局部修改功能设计
 
-1. **仿真系统完善**
-  - 添加仿真代码沙箱（安全执行）
-  - 支持更多学科仿真类型
-2. **文档管理增强**
-  - 实现局部修改功能
-  - 添加导出 PDF 功能
-
-### 中期 (1 个月)
-
-1. **付费系统集成**
-  - 会员模型设计
-  - 微信支付集成
-  - 生成次数限制
-2. **性能优化**
-  - 任务队列迁移至 Redis
-  - 前端懒加载优化
-
-### 长期 (3 个月)
-
-1. **功能扩展**
-  - 模板市场
-  - 协作编辑
-  - 学校/企业版
+### 下周 (3月31日-4月6日)
+1. 实现局部修改功能
+2. 测试付费系统流程
+3. 准备 Phase 6 开发
 
 ---
 
 ## 文档索引
 
-
-| 文档   | 路径                    | 说明     |
-| ---- | --------------------- | ------ |
+| 文档 | 路径 | 说明 |
+|------|------|------|
 | 需求文档 | `doc/requirements.md` | 产品需求定义 |
 | 架构说明 | `doc/ARCHITECTURE.md` | 技术架构详解 |
-| 任务清单 | `doc/tasks.md`        | 开发进度跟踪 |
-
+| 任务清单 | `doc/tasks.md` | 开发进度跟踪 |
+| 进度文档 | `doc/progress.md` | 最新进度汇总 |
 
 ---
 
-*文档版本: v2.2*
-*最后更新: 2026-03-20*
+*文档版本: v3.0*
+*最后更新: 2026-03-24*

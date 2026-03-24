@@ -1,17 +1,11 @@
 """
 大纲模型定义
 """
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 import json
 
-from app.core.database import Base
-
-
-def get_utc_now():
-    """获取当前 UTC 时间"""
-    return datetime.now(timezone.utc)
+from app.core.database import Base, get_now
 
 
 class Outline(Base):
@@ -38,8 +32,8 @@ class Outline(Base):
     # 关联文档（一对多）
     documents = relationship("Document", back_populates="outline", cascade="all, delete-orphan")
     
-    created_at = Column(DateTime, default=get_utc_now, nullable=False)
-    updated_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
+    created_at = Column(DateTime, default=get_now, nullable=False)
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, nullable=False)
     
     def get_outline_data(self):
         """解析 outline_json 为 Python 对象"""

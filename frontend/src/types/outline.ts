@@ -19,10 +19,13 @@ export interface Outline {
   created_at: string
 }
 
+import type { GenerationConfigCreate } from './generationConfig'
+
 export interface GenerateOutlineRequest {
   course: string
   knowledge_point: string
   difficulty: 'easy' | 'medium' | 'hard'
+  config?: GenerationConfigCreate  // 可选的生成配置
 }
 
 export interface UpdateOutlineRequest {

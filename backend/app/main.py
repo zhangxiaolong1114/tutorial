@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging_config import setup_logging
-from app.api import auth, outline, document
+from app.api import auth, outline, document, generation_config
 from app.core.database import engine, Base
 from app.services.task_queue_service import task_queue_service
 
@@ -54,6 +54,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(outline.router)
 app.include_router(document.router)
+app.include_router(generation_config.router)
 
 
 @app.get("/")

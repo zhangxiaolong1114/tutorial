@@ -1,42 +1,54 @@
 <template>
-  <div class="max-w-4xl mx-auto h-full flex flex-col overflow-y-auto pb-6">
+  <div class="max-w-6xl mx-auto h-full flex flex-col">
     <h1 class="text-2xl font-bold text-gray-900 mb-6">{{ $t('generate.title') }}</h1>
 
     <!-- 生成表单 -->
-    <div v-if="!currentTask" class="bg-white rounded-xl shadow-sm p-6 mb-6">
-      <p class="text-gray-600 mb-6">{{ $t('generate.tip') }}</p>
+    <div v-if="!currentTask" class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
+      <!-- 左侧：基本信息 -->
+      <div class="lg:col-span-2 space-y-6">
+        <div class="bg-white rounded-xl shadow-sm p-6">
+          <h2 class="text-lg font-semibold text-gray-900 mb-4">基本信息</h2>
+          
+          <form @submit.prevent="handleGenerate" class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.courseName') }}</label>
+                <input v-model="form.course" type="text" required
+                  class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  :placeholder="$t('generate.coursePlaceholder')" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.knowledgePoint') }}</label>
+                <input v-model="form.knowledge_point" type="text" required
+                  class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  :placeholder="$t('generate.knowledgePlaceholder')" />
+              </div>
+            </div>
 
-      <form @submit.prevent="handleGenerate" class="space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.courseName') }}</label>
-            <input v-model="form.course" type="text" required
-              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              :placeholder="$t('generate.coursePlaceholder')" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.knowledgePoint') }}</label>
-            <input v-model="form.knowledge_point" type="text" required
-              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              :placeholder="$t('generate.knowledgePlaceholder')" />
-          </div>
+            <div class="bg-blue-50 rounded-lg p-4">
+              <div class="flex items-center gap-2 text-blue-700 text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>难度等级和其他生成选项请在右侧配置面板中设置</span>
+              </div>
+            </div>
+
+            <button type="submit" :disabled="isSubmitting"
+              class="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              {{ isSubmitting ? '提交中...' : $t('generate.generateButton') }}
+            </button>
+          </form>
         </div>
+      </div>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.difficulty') }}</label>
-          <select v-model="form.difficulty"
-            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-            <option value="easy">{{ $t('generate.difficultyEasy') }}</option>
-            <option value="medium">{{ $t('generate.difficultyMedium') }}</option>
-            <option value="hard">{{ $t('generate.difficultyHard') }}</option>
-          </select>
-        </div>
-
-        <button type="submit" :disabled="isSubmitting"
-          class="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          {{ isSubmitting ? '提交中...' : $t('generate.generateButton') }}
-        </button>
-      </form>
+      <!-- 右侧：生成配置 -->
+      <div class="lg:col-span-1 h-full overflow-hidden">
+        <GenerationConfigPanel
+          ref="configPanelRef"
+          @save="onConfigSave"
+        />
+      </div>
     </div>
 
     <!-- 任务状态显示 -->
@@ -90,18 +102,20 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { generateOutline, getTaskStatus } from '../api/outline'
+import GenerationConfigPanel from '../components/GenerationConfigPanel.vue'
 import type { TaskResponse, TaskStatusResponse } from '../types/outline'
+import type { GenerationConfigCreate } from '../types/generationConfig'
 
 const router = useRouter()
 const isSubmitting = ref(false)
 const currentTask = ref<TaskStatusResponse | null>(null)
 const pollInterval = ref<number | null>(null)
 const progressPercent = ref(10)
+const configPanelRef = ref<InstanceType<typeof GenerationConfigPanel> | null>(null)
 
 const form = ref({
   course: '',
-  knowledge_point: '',
-  difficulty: 'medium' as 'easy' | 'medium' | 'hard'
+  knowledge_point: ''
 })
 
 const taskStatusClass = computed(() => {
@@ -144,6 +158,11 @@ const taskStatusDescription = computed(() => {
       return ''
   }
 })
+
+// 配置保存回调（可选，用于显示保存成功提示）
+const onConfigSave = (config: GenerationConfigCreate) => {
+  console.log('配置已保存:', config)
+}
 
 // 轮询任务状态
 const startPolling = (taskId: number) => {
@@ -188,11 +207,43 @@ const startPolling = (taskId: number) => {
 const handleGenerate = async () => {
   isSubmitting.value = true
   try {
-    const response: TaskResponse = await generateOutline({
+    // 获取当前配置
+    const config = configPanelRef.value?.getConfig()
+    
+    if (!config) {
+      alert('无法获取配置信息')
+      return
+    }
+    
+    // 自动保存配置
+    const saveSuccess = await configPanelRef.value?.saveConfig()
+    if (!saveSuccess) {
+      console.warn('配置保存失败，继续生成...')
+    }
+    
+    // 构建请求数据
+    const requestData: {
+      course: string
+      knowledge_point: string
+      difficulty: 'easy' | 'medium' | 'hard'
+      config?: GenerationConfigCreate
+    } = {
       course: form.value.course,
       knowledge_point: form.value.knowledge_point,
-      difficulty: form.value.difficulty
-    })
+      difficulty: 'medium'  // 默认难度，实际使用配置中的 difficulty
+    }
+    
+    // 添加配置到请求中，并使用配置中的难度
+    requestData.config = config
+    // 将配置中的 difficulty 映射到请求中的 difficulty（向后兼容）
+    const difficultyMap: Record<string, 'easy' | 'medium' | 'hard'> = {
+      'beginner': 'easy',
+      'intermediate': 'medium',
+      'advanced': 'hard'
+    }
+    requestData.difficulty = difficultyMap[config.difficulty] || 'medium'
+    
+    const response: TaskResponse = await generateOutline(requestData)
 
     // 设置初始任务状态
     currentTask.value = {

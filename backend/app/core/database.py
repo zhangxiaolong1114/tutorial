@@ -2,6 +2,7 @@
 数据库连接配置
 使用 SQLAlchemy 2.0 语法
 """
+from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import StaticPool
@@ -9,6 +10,14 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import get_settings
 
 settings = get_settings()
+
+
+def get_now():
+    """
+    获取当前本地时间
+    项目统一使用本地时间（Asia/Shanghai），不使用 UTC
+    """
+    return datetime.now()
 
 # 创建数据库引擎
 # 根据数据库类型配置不同参数

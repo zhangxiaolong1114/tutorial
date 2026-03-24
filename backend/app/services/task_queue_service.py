@@ -97,18 +97,35 @@ class TaskQueueService:
     def _handle_generate_outline(self, db: Session, task: TaskQueue) -> Dict[str, Any]:
         """处理生成大纲任务"""
         from app.models.outline import Outline
-        
+
         params = task.get_params()
         course = params.get("course")
         knowledge_point = params.get("knowledge_point")
         difficulty = params.get("difficulty", "medium")
-        
-        # 调用AI服务生成大纲
-        outline_data = ai_service.generate_outline(
-            course=course,
-            knowledge_point=knowledge_point,
-            difficulty=difficulty
-        )
+        config = params.get("config")  # 获取配置
+
+        logger.info(f"生成大纲任务参数: course={course}, knowledge_point={knowledge_point}, difficulty={difficulty}")
+        logger.info(f"配置信息: config={config}")
+
+        # 调用AI服务生成大纲（使用配置）
+        if config:
+            logger.info(f"使用配置化生成方法: teaching_style={config.get('teaching_style')}, difficulty={config.get('difficulty')}")
+            # 使用新的配置化生成方法
+            outline_data = ai_service.generate_outline_with_config(
+                course=course,
+                knowledge_point=knowledge_point,
+                config=config,
+                task_id=str(task.id)
+            )
+        else:
+            logger.info("使用默认生成方法（无配置）")
+            # 使用旧方法（向后兼容）
+            outline_data = ai_service.generate_outline(
+                course=course,
+                knowledge_point=knowledge_point,
+                difficulty=difficulty,
+                task_id=str(task.id)
+            )
         
         # 创建大纲记录
         outline = Outline(
@@ -119,6 +136,12 @@ class TaskQueueService:
             outline_json="",
             status="generated"
         )
+
+        # 将配置保存到大纲数据中，供后续文档生成使用
+        if config:
+            outline_data["config"] = config
+            logger.info(f"配置已保存到大纲数据: {config}")
+
         outline.set_outline_data(outline_data)
         
         db.add(outline)
@@ -199,6 +222,203 @@ class TaskQueueService:
             logger.error(f"Failed to generate section {section_id}: {e}")
             return (section_id, section_title, f"<p>内容生成失败: {str(e)}</p>", str(e))
 
+    def _generate_section_with_retry(
+        self,
+        section: dict,
+        section_index: int,
+        outline,
+        config: dict,
+        task_id: str,
+        context: dict,
+        max_retries: int = 2
+    ) -> dict:
+        """
+        带重试机制的章节生成
+        
+        Args:
+            section: 章节信息
+            section_index: 章节索引
+            outline: 大纲对象
+            config: 配置
+            task_id: 任务ID
+            context: 上下文信息
+            max_retries: 最大重试次数
+        
+        Returns:
+            {
+                'html': 章节HTML,
+                'content': 提取的内容（用于摘要）,
+                'meta': 章节元数据
+            }
+        """
+        section_id = section.get("id", "")
+        section_title = section.get("title", "")
+        section_content = section.get("content", [])
+        is_simulation = section_id == "simulation" or "仿真" in section_title
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if is_simulation:
+                    # 仿真章节 - 构建增强的仿真描述，包含上下文信息
+                    simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
+                    
+                    # 从前置章节提取核心公式和概念
+                    key_concepts = []
+                    key_formulas = []
+                    if context and context.get("prev_summary"):
+                        prev_content = context["prev_summary"].get("content", "")
+                        # 提取可能的公式（简化处理）
+                        import re
+                        formulas = re.findall(r'\$\$.*?\$\$', prev_content)
+                        if formulas:
+                            key_formulas.extend(formulas[:3])  # 最多取3个公式
+                    
+                    # 构建仿真上下文
+                    simulation_context = {
+                        "prev_summary": context.get("prev_summary") if context else None,
+                        "outline_structure": context.get("outline_structure") if context else None,
+                        "key_formulas": "\n".join(key_formulas) if key_formulas else None,
+                        "section_content": section_content if isinstance(section_content, list) else [str(section_content)]
+                    }
+                    
+                    if config:
+                        logger.info(f"[Retry {attempt}] 使用配置化生成仿真: {section_id}")
+                        simulation_html = ai_service.generate_simulation_code_with_config(
+                            simulation_desc=simulation_desc,
+                            course=outline.course,
+                            knowledge_point=outline.knowledge_point,
+                            simulation_types=config.get('simulation_types', ['animation']),
+                            config=config,
+                            task_id=task_id,
+                            context=simulation_context
+                        )
+                    else:
+                        logger.info(f"[Retry {attempt}] 使用默认生成仿真: {section_id}")
+                        simulation_html = ai_service.generate_simulation_code(
+                            simulation_desc=simulation_desc,
+                            course=outline.course,
+                            knowledge_point=outline.knowledge_point,
+                            task_id=task_id
+                        )
+                    
+                    has_error = '仿真代码生成失败' in simulation_html
+                    
+                    if not has_error:
+                        wrapped_html = f'''<div class="section-content">
+<h3>{section_title}</h3>
+<div class="simulation-wrapper" style="border: 2px solid var(--primary-color); border-radius: 12px; padding: 20px; margin: 20px 0; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
+{simulation_html}
+</div>
+</div>'''
+                        return {
+                            'html': f"<section id='{section_id}'>\n{wrapped_html}\n</section>",
+                            'content': wrapped_html,
+                            'meta': {
+                                "id": section_id,
+                                "title": section_title,
+                                "generated": True,
+                                "error": None,
+                                "type": "simulation",
+                                "retry_count": attempt
+                            }
+                        }
+                    elif attempt < max_retries:
+                        logger.warning(f"仿真生成失败，准备重试 ({attempt + 1}/{max_retries})")
+                        import time
+                        time.sleep(2 ** attempt)  # 指数退避
+                    else:
+                        # 重试耗尽，返回错误
+                        return {
+                            'html': f"<section id='{section_id}'>\n{simulation_html}\n</section>",
+                            'content': simulation_html,
+                            'meta': {
+                                "id": section_id,
+                                "title": section_title,
+                                "generated": False,
+                                "error": "仿真生成失败（重试耗尽）",
+                                "type": "simulation",
+                                "retry_count": attempt
+                            }
+                        }
+                
+                else:
+                    # 普通章节使用 Kimi
+                    if config:
+                        logger.info(f"[Retry {attempt}] 使用配置化生成章节: {section_id}")
+                        html_content = ai_service.generate_section_content_with_config(
+                            section_title=section_title,
+                            section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
+                            course=outline.course,
+                            knowledge_point=outline.knowledge_point,
+                            config=config,
+                            task_id=task_id,
+                            context=context
+                        )
+                    else:
+                        logger.info(f"[Retry {attempt}] 使用默认生成章节: {section_id}")
+                        html_content = ai_service.generate_section_content(
+                            section_title=section_title,
+                            section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
+                            course=outline.course,
+                            knowledge_point=outline.knowledge_point,
+                            task_id=task_id,
+                            context=context
+                        )
+                    
+                    has_error = '内容生成失败' in html_content
+                    
+                    if not has_error:
+                        return {
+                            'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
+                            'content': html_content,
+                            'meta': {
+                                "id": section_id,
+                                "title": section_title,
+                                "generated": True,
+                                "error": None,
+                                "type": "content",
+                                "retry_count": attempt
+                            }
+                        }
+                    elif attempt < max_retries:
+                        logger.warning(f"章节生成返回错误，准备重试 ({attempt + 1}/{max_retries})")
+                        import time
+                        time.sleep(2 ** attempt)  # 指数退避
+                    else:
+                        return {
+                            'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
+                            'content': html_content,
+                            'meta': {
+                                "id": section_id,
+                                "title": section_title,
+                                "generated": False,
+                                "error": "AI生成返回失败内容（重试耗尽）",
+                                "type": "content",
+                                "retry_count": attempt
+                            }
+                        }
+                        
+            except Exception as e:
+                logger.error(f"[Retry {attempt}] 生成章节 {section_id} 失败: {e}")
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2 ** attempt)
+                else:
+                    # 重试耗尽，返回错误内容但不中断整个文档
+                    error_content = f'<div class="warning"><strong>内容生成失败</strong><p>章节：{section_title}</p><p>错误：{str(e)[:200]}</p></div>'
+                    return {
+                        'html': f"<section id='{section_id}'>\n{error_content}\n</section>",
+                        'content': error_content,
+                        'meta': {
+                            "id": section_id,
+                            "title": section_title,
+                            "generated": False,
+                            "error": str(e),
+                            "type": "simulation" if is_simulation else "content",
+                            "retry_count": attempt
+                        }
+                    }
+
     def _handle_generate_document(self, db: Session, task: TaskQueue) -> Dict[str, Any]:
         """处理生成文档任务"""
         from app.models.outline import Outline
@@ -206,109 +426,92 @@ class TaskQueueService:
         
         params = task.get_params()
         outline_id = params.get("outline_id")
-        
+
         # 获取大纲
         outline = db.query(Outline).filter(
             Outline.id == outline_id,
             Outline.user_id == task.user_id
         ).first()
-        
+
         if not outline:
             raise ValueError(f"Outline {outline_id} not found")
-        
+
         outline_data = outline.get_outline_data()
         sections = outline_data.get("sections", [])
-        
-        logger.info(f"Starting generation of {len(sections)} sections for document")
-        
-        # 生成每个章节的HTML内容
+
+        # 获取配置（优先从任务参数获取，否则从大纲数据获取）
+        config = params.get("config") or outline_data.get("config")
+        logger.info(f"生成文档任务参数: outline_id={outline_id}, sections={len(sections)}")
+        logger.info(f"配置信息: config={config}")
+
+        logger.info(f"Starting generation of {len(sections)} sections for document with context coherence")
+
+        # 准备大纲结构信息（用于上下文）
+        outline_structure = "\n".join([
+            f"{i+1}. {s.get('title', '未命名')} ({s.get('id', 'unknown')})"
+            for i, s in enumerate(sections)
+        ])
+
+        # 生成每个章节的HTML内容（带上下文连贯性）
         html_contents = []
         generated_sections = []
-        simulation_html = None  # 单独存储仿真代码
-        
-        for section in sections:
+        prev_section_summary = None  # 前一章的摘要
+
+        for section_index, section in enumerate(sections):
             section_id = section.get("id", "")
             section_title = section.get("title", "")
             section_content = section.get("content", [])
+
+            # 构建上下文信息
+            context = {
+                "outline_structure": outline_structure,
+                "position": {
+                    "current_index": section_index,
+                    "total": len(sections),
+                    "prev_title": sections[section_index - 1].get("title") if section_index > 0 else None,
+                    "next_title": sections[section_index + 1].get("title") if section_index < len(sections) - 1 else None
+                },
+                "prev_summary": prev_section_summary,
+                "generated_sections": "\n".join([
+                    f"- {s.get('title')}" for s in sections[:section_index]
+                ]) if section_index > 0 else "无"
+            }
+
+            # 使用重试机制生成章节内容
+            section_result = self._generate_section_with_retry(
+                section=section,
+                section_index=section_index,
+                outline=outline,
+                config=config,
+                task_id=str(task.id),
+                context=context,
+                max_retries=2
+            )
             
-            try:
-                # 仿真章节暂时跳过（后续优化）
-                if section_id == "simulation" or "仿真" in section_title:
-                    # 生成占位内容
-                    placeholder_content = f'''<div class="section-content">
-<h3>{section_title}</h3>
-<div class="tip">
-    <strong>交互仿真开发中</strong>
-    <p>本知识点的交互式仿真功能正在开发中，敬请期待。</p>
-    <p>仿真内容：{section_content[0] if isinstance(section_content, list) and section_content else str(section_content)}</p>
-</div>
-</div>'''
-                    html_contents.append(f"<section id='{section_id}'>\n{placeholder_content}\n</section>")
-                    generated_sections.append({
-                        "id": section_id,
-                        "title": section_title,
-                        "generated": True,
-                        "error": None,
-                        "type": "simulation_placeholder"
-                    })
-                    logger.info(f"Section {section_id} skipped (simulation placeholder)")
-                else:
-                    # 普通章节生成HTML
-                    html_content = ai_service.generate_section_content(
-                        section_title=section_title,
-                        section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
-                        course=outline.course,
-                        knowledge_point=outline.knowledge_point
-                    )
-                    
-                    # 检查返回的内容是否包含失败标记
-                    has_error = '内容生成失败' in html_content
-                    
-                    html_contents.append(f"<section id='{section_id}'>\n{html_content}\n</section>")
-                    generated_sections.append({
-                        "id": section_id,
-                        "title": section_title,
-                        "generated": not has_error,
-                        "error": "AI生成返回失败内容" if has_error else None,
-                        "type": "content"
-                    })
-                    
-                    if has_error:
-                        logger.warning(f"Section {section_id} returned error content")
-                    
-            except Exception as e:
-                logger.error(f"Failed to generate section {section_id}: {e}")
-                # 即使异常也要添加失败内容到 html_contents
-                error_content = f'<div class="warning"><strong>内容生成失败</strong><p>章节：{section_title}</p><p>错误：{str(e)[:200]}</p></div>'
-                html_contents.append(f"<section id='{section_id}'>\n{error_content}\n</section>")
-                generated_sections.append({
-                    "id": section_id,
+            html_contents.append(section_result['html'])
+            generated_sections.append(section_result['meta'])
+            
+            if section_result['meta']['generated']:
+                # 提取本章摘要用于下一章的上下文
+                prev_section_summary = self._extract_section_summary(section_title, section_result['content'])
+                logger.info(f"Section {section_id} summary extracted for next section context")
+            else:
+                # 生成失败，使用简化摘要
+                prev_section_summary = {
                     "title": section_title,
-                    "generated": False,
-                    "error": str(e),
-                    "type": "simulation" if section_id == "simulation" else "content"
-                })
+                    "content": f"章节生成失败，将在文档中显示错误提示。"
+                }
         
         # 合并 body 内容
         body_content = "\n\n".join(html_contents)
         title = outline_data.get("title", f"{outline.course} - {outline.knowledge_point}")
-        
-        # 如果有仿真内容，替换占位符并特殊处理
-        if simulation_html:
-            # 将仿真内容嵌入到占位符位置
-            # 为仿真内容添加隔离包装，确保脚本不会污染全局
-            isolated_simulation = f'''<div class="simulation-wrapper" style="border: 2px solid var(--primary-color); border-radius: 12px; padding: 20px; margin: 20px 0; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
-    <h3 style="color: var(--primary-color); margin-bottom: 15px;">🔬 交互仿真</h3>
-    {simulation_html}
-</div>'''
-            body_content = body_content.replace("<!-- SIMULATION_PLACEHOLDER -->", isolated_simulation)
-        
+
         # 生成完整 HTML 文档
         full_html = ai_service.generate_complete_html(title, body_content)
-        
+
         # 根据存储类型决定保存方式
         file_path = None
-        
+
         if settings.STORAGE_TYPE == "filesystem":
             # 先创建文档记录获取 ID
             document = Document(
@@ -317,13 +520,13 @@ class TaskQueueService:
                 title=title,
                 html_content=None,  # 暂时为空
                 file_path=None,
-                simulation_code=simulation_html  # 单独存储仿真代码
+                simulation_code=None  # 仿真代码已嵌入 HTML
             )
             document.set_sections_data(generated_sections)
             db.add(document)
             db.commit()
             db.refresh(document)
-            
+
             # 保存到文件系统
             file_path = file_storage_service.save_document(
                 document_id=document.id,
@@ -331,7 +534,7 @@ class TaskQueueService:
                 title=title,
                 html_content=full_html
             )
-            
+
             if file_path:
                 # 更新文件路径，数据库只存摘要（前500字符）
                 document.file_path = file_path
@@ -350,25 +553,48 @@ class TaskQueueService:
                 outline_id=outline.id,
                 title=title,
                 html_content=full_html,
-                simulation_code=simulation_html  # 单独存储仿真代码
+                simulation_code=None  # 仿真代码已嵌入 HTML
             )
             document.set_sections_data(generated_sections)
             db.add(document)
             db.commit()
             db.refresh(document)
-        
+
         # 更新任务关联资源
         task.resource_id = document.id
         task.resource_type = "document"
         db.commit()
-        
+
         logger.info(f"Document {document.id} generated successfully for task {task.id}")
-        
+
         return {
             "document_id": document.id,
             "title": title
         }
-    
+
+    def _extract_section_summary(self, section_title: str, html_content: str) -> dict:
+        """
+        从章节 HTML 内容中提取摘要，用于下一章的上下文
+        """
+        import re
+
+        # 移除 HTML 标签获取纯文本
+        text = re.sub(r'<[^>]+>', ' ', html_content)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        # 提取前 300 字符作为摘要
+        summary_text = text[:300] if len(text) > 300 else text
+
+        # 尝试提取核心公式（如果有）
+        formulas = re.findall(r'\$\$(.*?)\$\$', html_content)
+        formula_summary = f"核心公式: {'; '.join(formulas[:2])}" if formulas else ""
+
+        return {
+            "title": section_title,
+            "content": summary_text,
+            "formulas": formula_summary
+        }
+
     async def process_task(self, task_id: int):
         """处理单个任务（在线程池中运行）"""
         db = SessionLocal()
@@ -379,7 +605,7 @@ class TaskQueueService:
             
             # 更新为处理中
             task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now(timezone.utc)
+            task.started_at = datetime.now()
             db.commit()
             
             logger.info(f"Processing task {task_id}, type: {task.task_type}")
@@ -395,7 +621,7 @@ class TaskQueueService:
             
             # 更新为完成
             task.status = TaskStatus.COMPLETED
-            task.completed_at = datetime.now(timezone.utc)
+            task.completed_at = datetime.now()
             task.set_result(result)
             db.commit()
             
@@ -405,7 +631,7 @@ class TaskQueueService:
             logger.error(f"Task {task_id} failed: {e}")
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
-            task.completed_at = datetime.now(timezone.utc)
+            task.completed_at = datetime.now()
             db.commit()
         finally:
             db.close()

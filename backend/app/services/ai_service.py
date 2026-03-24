@@ -1,16 +1,271 @@
 """
 AI 服务封装
-支持 Kimi API 调用
+支持 Kimi API 调用，带完整日志记录和自动续生成功能
 """
 import json
 import logging
+import os
+import re
 import requests
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple
 
 from app.core.config import get_settings
+from app.core.prompt_templates import (
+    build_outline_prompt,
+    build_section_prompt,
+    build_simulation_prompt,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class AIResponseLogger:
+    """AI 响应日志记录器"""
+    
+    def __init__(self):
+        self.log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs', 'ai_responses')
+        os.makedirs(self.log_dir, exist_ok=True)
+    
+    def log_response(self, task_id: str, module: str, model: str, result: dict, content: str):
+        """
+        记录 AI 响应到日志文件
+        
+        Args:
+            task_id: 任务ID
+            module: 模块名称 (outline/section/simulation)
+            model: 模型名称 (kimi/claude)
+            result: API 原始响应
+            content: 提取的内容
+        """
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{model}_{module}_task{task_id}_{timestamp}.json"
+        filepath = os.path.join(self.log_dir, filename)
+        
+        log_data = {
+            "timestamp": timestamp,
+            "task_id": task_id,
+            "module": module,
+            "model": model,
+            "stop_reason": result.get("stop_reason") or result.get("choices", [{}])[0].get("finish_reason"),
+            "usage": result.get("usage", {}),
+            "content_length": len(content),
+            "content_preview": content[:500] if content else "",
+            "full_response": result
+        }
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(log_data, f, ensure_ascii=False, indent=2)
+            logger.debug(f"[AI Logger] 响应已记录: {filepath}")
+        except Exception as e:
+            logger.warning(f"[AI Logger] 保存日志失败: {e}")
+        
+        return filepath
+
+
+class ContentValidator:
+    """内容完整性验证器"""
+    
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """标准化文本用于比较（移除空白、转为小写）"""
+        return re.sub(r'\s+', '', text.lower().strip())
+    
+    @staticmethod
+    def calculate_similarity(text1: str, text2: str) -> float:
+        """
+        计算两段文本的相似度（0-1）
+        使用简单的高效算法：基于字符 n-gram 的 Jaccard 相似度
+        """
+        if not text1 or not text2:
+            return 0.0
+        
+        # 标准化
+        norm1 = ContentValidator._normalize_text(text1)
+        norm2 = ContentValidator._normalize_text(text2)
+        
+        if not norm1 or not norm2:
+            return 0.0
+        
+        # 如果长度差异过大，直接返回低相似度
+        len_ratio = min(len(norm1), len(norm2)) / max(len(norm1), len(norm2))
+        if len_ratio < 0.5:
+            return len_ratio
+        
+        # 使用 4-gram 计算 Jaccard 相似度
+        def get_ngrams(text, n=4):
+            return set(text[i:i+n] for i in range(len(text) - n + 1))
+        
+        ngrams1 = get_ngrams(norm1)
+        ngrams2 = get_ngrams(norm2)
+        
+        if not ngrams1 or not ngrams2:
+            return 0.0
+        
+        intersection = len(ngrams1 & ngrams2)
+        union = len(ngrams1 | ngrams2)
+        
+        return intersection / union if union > 0 else 0.0
+    
+    @staticmethod
+    def check_json_complete(content: str) -> Tuple[bool, str]:
+        """检查 JSON 内容是否完整"""
+        content = content.strip()
+        
+        # 移除 markdown 代码块标记
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        try:
+            json.loads(content)
+            return True, "JSON 完整"
+        except json.JSONDecodeError as e:
+            return False, f"JSON 不完整: {str(e)}"
+    
+    @staticmethod
+    def check_html_complete(content: str) -> Tuple[bool, str]:
+        """检查 HTML 内容是否完整"""
+        content = content.strip()
+        
+        # 检查关键标签是否闭合
+        tags_to_check = [
+            ('<div class="section-content">', '</div>'),
+            ('<script>', '</script>'),
+        ]
+        
+        for open_tag, close_tag in tags_to_check:
+            open_count = content.count(open_tag)
+            close_count = content.count(close_tag)
+            if open_count != close_count:
+                return False, f"标签不匹配: {open_tag} 出现 {open_count} 次, {close_tag} 出现 {close_count} 次"
+        
+        # 检查是否有未闭合的 IIFE
+        if "(function()" in content and not content.rstrip().endswith("})();"):
+            if "<script>" in content:
+                return False, "JavaScript IIFE 未正确闭合"
+        
+        return True, "HTML 结构完整"
+    
+    @staticmethod
+    def check_outline_complete(content: str) -> Tuple[bool, str]:
+        """检查大纲 JSON 是否完整"""
+        return ContentValidator.check_json_complete(content)
+    
+    @staticmethod
+    def check_section_complete(content: str) -> Tuple[bool, str]:
+        """检查章节 HTML 是否完整"""
+        # 章节内容只需要检查基本结构完整性
+        # 不要求严格的标签数量匹配，因为内容中可能有很多嵌套 div
+        
+        # 检查是否有 section-content 容器
+        if '<div class="section-content">' not in content:
+            # 如果没有 section-content，检查是否有其他有效的内容结构
+            has_heading = '<h3>' in content or '<h4>' in content
+            has_paragraph = '<p>' in content
+            has_formula = '$' in content
+            
+            if not (has_heading or has_paragraph or has_formula):
+                return False, "内容缺少基本结构（标题、段落或公式）"
+        
+        # 检查 script 标签是否匹配（如果存在）
+        script_open = content.count('<script>')
+        script_close = content.count('</script>')
+        if script_open != script_close:
+            return False, f"script 标签不匹配"
+        
+        # 检查是否有未闭合的公式（行内公式 $...$ 应该成对出现）
+        # 注意：这只是一个简单的检查，可能不完全准确
+        dollar_count = content.count('$')
+        if dollar_count % 2 != 0:
+            return False, "公式分隔符 $ 数量不匹配"
+        
+        return True, "章节内容结构完整"
+    
+    @staticmethod
+    def check_simulation_complete(content: str) -> Tuple[bool, str]:
+        """检查仿真代码是否完整"""
+        import re
+        
+        # 检查 simulation-container 标签是否闭合
+        open_count = len(re.findall(r'<div[^>]*class=["\'][^"\']*simulation-container[^"\']*["\'][^>]*>', content, re.IGNORECASE))
+        close_count = content.lower().count('</div>')
+        
+        # 对于仿真代码，我们只检查是否有 simulation-container 和对应的闭合
+        # 不严格要求数量匹配，因为内部可能有很多嵌套 div
+        if open_count == 0:
+            return False, "缺少 simulation-container 容器"
+        
+        # 检查 script 标签是否闭合
+        script_open = content.lower().count('<script>')
+        script_close = content.lower().count('</script>')
+        if script_open != script_close:
+            return False, f"script 标签不匹配: 开启 {script_open} 次, 闭合 {script_close} 次"
+        
+        # 检查 IIFE 是否正确闭合
+        if "(function()" in content or "(function ()" in content:
+            if not re.search(r'\}\)\(\);\s*</script>', content, re.DOTALL):
+                return False, "JavaScript IIFE 未正确闭合或 script 标签未闭合"
+        
+        # 额外检查仿真特有的结构
+        has_canvas = "<canvas" in content.lower()
+        has_2d_context = "getContext('2d')" in content or 'getContext("2d")' in content
+        if has_canvas and not has_2d_context:
+            return False, "Canvas 初始化代码不完整"
+        
+        # 检查关键帧数据完整性（动画类型仿真）
+        if "keyFrames" in content or "keyframes" in content.lower():
+            # 检查关键帧数据是否完整（不能只定义第0帧）
+            import re
+            keyframe_pattern = r'keyFrames\s*=\s*\{([^}]+)\}'
+            match = re.search(keyframe_pattern, content, re.DOTALL)
+            if match:
+                keyframe_content = match.group(1)
+                # 计算定义了多少个关键帧
+                frame_count = len(re.findall(r'\d+\s*:', keyframe_content))
+                if frame_count < 5:
+                    return False, f"关键帧数据不完整：只定义了 {frame_count} 帧，至少需要 5 帧"
+        
+        # 检查是否有省略性注释
+        forbidden_patterns = [
+            r'此处省略.*代码',
+            r'根据实际.*实现',
+            r'添加更多.*数据',
+            r'根据.*模型实现',
+            r'//\s*\.\.\.',
+            r'/\*\s*\.\.\.\s*\*/',
+            r'//\s*TODO',
+            r'//\s*FIXME',
+        ]
+        for pattern in forbidden_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return False, f"发现省略性注释或未完成标记: {pattern}"
+        
+        # 检查绘制函数是否完整实现
+        draw_functions = re.findall(r'function\s+(draw\w*|render\w*|animate)\s*\([^)]*\)\s*\{([^}]*)\}', content, re.DOTALL)
+        
+        # 统计所有绘制函数中的 ctx. 调用总数
+        total_ctx_calls = 0
+        for func_name, func_body in draw_functions:
+            clean_body = re.sub(r'/\*.*?\*/', '', func_body, flags=re.DOTALL)
+            clean_body = re.sub(r'//.*?\n', '\n', clean_body)
+            clean_body = clean_body.strip()
+            total_ctx_calls += clean_body.count('ctx.')
+            # 单个函数至少要有一些代码
+            if len(clean_body) < 10:
+                return False, f"绘制函数 '{func_name}' 实现不完整"
+        
+        # 所有绘制函数加起来至少要有一些 Canvas 调用
+        if total_ctx_calls < 3:
+            return False, "绘制函数缺少 Canvas 绘制代码"
+        
+        return True, "仿真代码完整"
 
 
 class AIService:
@@ -19,19 +274,92 @@ class AIService:
     def __init__(self):
         self.kimi_api_key = settings.KIMI_API_KEY
         self.kimi_base_url = "https://api.moonshot.cn/v1"
+        
+        # Claude 配置（从配置文件读取）
         self.claude_api_key = settings.CLAUDE_API_KEY
+        self.claude_base_url = getattr(settings, 'CLAUDE_BASE_URL', 'https://xiaoai.plus/v1')
+        self.claude_model = getattr(settings, 'CLAUDE_MODEL', 'claude-opus-4-5-20251101')
+        
+        self.response_logger = AIResponseLogger()
+        self.validator = ContentValidator()
     
-    def _call_kimi(self, messages: list, temperature: float = 0.7, max_retries: int = 3) -> str:
+    def _save_kimi_response(self, task_id: str, module: str, result: dict, content: str):
+        """保存 Kimi 响应到日志"""
+        return self.response_logger.log_response(task_id, module, "kimi", result, content)
+    
+    def _save_claude_response(self, task_id: str, module: str, result: dict, content: str):
+        """保存 Claude 响应到日志"""
+        return self.response_logger.log_response(task_id, module, "claude", result, content)
+    
+    def _log_full_prompt(self, task_id: str, module: str, model: str, messages: list):
         """
-        调用 Kimi API（带重试机制）
+        记录完整 Prompt 到 ai_server.log
         
         Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_retries: 最大重试次数
+            task_id: 任务ID
+            module: 模块名称
+            model: 模型名称
+            messages: 完整的对话消息列表
+        """
+        import os
+        
+        log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        log_file = os.path.join(log_dir, 'ai_server.log')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 构建完整的 prompt 文本
+        prompt_lines = [f"\n{'='*80}", f"[{timestamp}] Task {task_id}/{module} - {model.upper()} FULL PROMPT", f"{'='*80}"]
+        
+        for i, msg in enumerate(messages):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            prompt_lines.append(f"\n--- Message {i+1} [{role}] ---")
+            prompt_lines.append(content)
+        
+        prompt_lines.append(f"\n{'='*80}\n")
+        
+        # 追加写入日志文件
+        try:
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write('\n'.join(prompt_lines))
+        except Exception as e:
+            logger.warning(f"[AI Logger] 保存完整 prompt 失败: {e}")
+    
+    def _is_duplicate_content(self, prev_content: str, new_content: str, threshold: float = 0.85) -> bool:
+        """
+        检测新内容是否与之前的内容重复
+        
+        Args:
+            prev_content: 之前生成的内容
+            new_content: 新返回的内容
+            threshold: 相似度阈值，超过则认为重复
         
         Returns:
-            AI 回复内容
+            True 如果内容重复
+        """
+        if not prev_content or not new_content:
+            return False
+        
+        similarity = self.validator.calculate_similarity(prev_content, new_content)
+        logger.debug(f"[Content Check] 内容相似度: {similarity:.2%}")
+        
+        return similarity > threshold
+    
+    def _call_kimi_with_continuation(
+        self, 
+        messages: list, 
+        task_id: str,
+        module: str,
+        temperature: float = 0.7,
+        max_retries: int = 3
+    ) -> Tuple[str, str]:
+        """
+        调用 Kimi API，支持自动续生成
+        
+        Returns:
+            (content, log_file_path)
         """
         import time
         
@@ -43,115 +371,115 @@ class AIService:
             "Content-Type": "application/json"
         }
         
-        # 使用 moonshot-v1-8k 模型（默认）
-        model = "moonshot-v1-8k"
+        # model = "kimi-k2-0905-preview"  # 使用长上下文模型
+        model = "kimi-k2.5"  # 使用长上下文模型
         
-        # 估算 token 数量并记录
-        total_chars = sum(len(m["content"]) for m in messages)
-        prompt_preview = messages[-1]["content"][:200] if messages else ""
-        logger.info(f"[Kimi API] 开始调用 | 模型: {model} | 字符数: {total_chars} | 消息数: {len(messages)}")
-        logger.debug(f"[Kimi API] Prompt 预览: {prompt_preview}...")
+        # kimi-k2.5 只支持 temperature=1
+        if model == "kimi-k2.5":
+            temperature = 1.0
         
-        data = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature
-        }
+        all_content = []
+        current_messages = messages.copy()
+        total_tokens = 0
+        max_continuation = 5  # 最大续生成次数
         
-        last_error = None
-        start_time = time.time()
+        # 记录完整 Prompt 到 ai_server.log
+        self._log_full_prompt(task_id, module, "kimi", messages)
         
-        for attempt in range(max_retries):
-            attempt_start = time.time()
-            logger.info(f"[Kimi API] 尝试 {attempt + 1}/{max_retries}")
+        for attempt in range(max_continuation):
+            data = {
+                "model": model,
+                "messages": current_messages,
+                "temperature": temperature,
+                "max_tokens": 24000  # kimi-k2.5 支持最大 65535 tokens，设置为 24000 确保复杂仿真代码能够完整生成
+            }
+            
+            logger.info(f"[Kimi API] Task {task_id}/{module} - 调用 #{attempt + 1}")
             
             try:
                 response = requests.post(
                     f"{self.kimi_base_url}/chat/completions",
                     headers=headers,
                     json=data,
-                    timeout=360  # 6 分钟超时
+                    timeout=300
                 )
                 
-                elapsed = time.time() - attempt_start
-                logger.info(f"[Kimi API] 响应状态: {response.status_code} | 耗时: {elapsed:.2f}s")
-                
-                # 处理限流错误
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 5))
-                    logger.warning(f"[Kimi API] 触发限流 (429)，等待 {retry_after}s 后重试")
-                    time.sleep(retry_after)
-                    continue
-                
-                # 处理其他 HTTP 错误
                 if response.status_code != 200:
-                    error_body = response.text[:500]
-                    logger.error(f"[Kimi API] HTTP 错误: {response.status_code} | 响应: {error_body}")
-                    last_error = f"HTTP {response.status_code}: {error_body}"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        logger.info(f"[Kimi API] 等待 {wait_time}s 后重试...")
-                        time.sleep(wait_time)
-                    continue
+                    error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
+                    logger.error(f"[Kimi API] 错误: {error_msg}")
+                    raise Exception(error_msg)
                 
                 result = response.json()
+                choice = result["choices"][0]
+                content = choice["message"]["content"]
+                finish_reason = choice.get("finish_reason", "unknown")
+                usage = result.get("usage", {})
                 
-                # 检查响应结构
-                if "choices" not in result or not result["choices"]:
-                    logger.error(f"[Kimi API] 响应结构异常: {json.dumps(result, ensure_ascii=False)[:500]}")
-                    raise ValueError("Invalid API response structure: missing 'choices'")
+                all_content.append(content)
+                total_tokens += usage.get("total_tokens", 0)
                 
-                content = result["choices"][0]["message"]["content"]
-                total_elapsed = time.time() - start_time
+                logger.info(f"[Kimi API] Task {task_id}/{module} - 收到响应, finish_reason={finish_reason}, tokens={usage.get('total_tokens', 0)}")
                 
-                # 记录成功信息
-                logger.info(f"[Kimi API] 调用成功 | 总耗时: {total_elapsed:.2f}s | 响应长度: {len(content)} 字符")
-                logger.debug(f"[Kimi API] 响应预览: {content[:200]}...")
+                # 保存响应日志
+                log_file = self._save_kimi_response(task_id, module, result, content)
                 
-                return content
+                # 检查内容完整性
+                if module == "outline":
+                    is_complete, check_msg = self.validator.check_outline_complete("".join(all_content))
+                elif module == "section":
+                    is_complete, check_msg = self.validator.check_section_complete("".join(all_content))
+                elif module == "simulation":
+                    is_complete, check_msg = self.validator.check_simulation_complete("".join(all_content))
+                else:
+                    is_complete, check_msg = True, "无需检查"
                 
-            except requests.exceptions.Timeout as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"请求超时 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Kimi API] 超时错误 (attempt {attempt + 1}): {last_error}")
-                if attempt < max_retries - 1:
-                    wait_time = min(2 ** attempt * 2, 30)  # 最大等待30秒
-                    logger.info(f"[Kimi API] 等待 {wait_time}s 后重试...")
-                    time.sleep(wait_time)
-                    
-            except requests.exceptions.RequestException as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"请求异常 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Kimi API] 请求异常 (attempt {attempt + 1}): {last_error}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    time.sleep(wait_time)
-                    
+                logger.info(f"[Kimi API] Task {task_id}/{module} - 完整性检查: {check_msg}")
+                
+                # 如果内容完整或不是因为长度截断，结束生成
+                if is_complete or finish_reason != "length":
+                    if not is_complete:
+                        logger.warning(f"[Kimi API] Task {task_id}/{module} - 内容可能不完整，但非长度原因: {check_msg}")
+                    return "".join(all_content), log_file
+                
+                # 需要续生成
+                logger.info(f"[Kimi API] Task {task_id}/{module} - 内容不完整，继续生成...")
+                
+                # 检查是否返回了重复内容（避免浪费 token）
+                if all_content and self._is_duplicate_content(all_content[-1], content):
+                    logger.warning(f"[Kimi API] Task {task_id}/{module} - 检测到重复内容，停止续生成")
+                    break
+                
+                # 添加已生成的内容到上下文，请求继续
+                current_messages.append({
+                    "role": "assistant",
+                    "content": content
+                })
+                current_messages.append({
+                    "role": "user", 
+                    "content": "请继续生成剩余内容，保持格式一致。从上次中断的地方继续，不要重复已生成的内容。"
+                })
+                
             except Exception as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"未知错误 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Kimi API] 未知错误 (attempt {attempt + 1}): {last_error}", exc_info=True)
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    time.sleep(wait_time)
+                logger.error(f"[Kimi API] Task {task_id}/{module} - 调用失败: {e}")
+                raise
         
-        # 所有重试都失败
-        total_elapsed = time.time() - start_time
-        final_error = f"[Kimi API] 调用失败（{max_retries} 次尝试后放弃）| 总耗时: {total_elapsed:.2f}s | 最后错误: {last_error}"
-        logger.error(final_error)
-        raise Exception(final_error)
+        # 达到最大续生成次数
+        logger.warning(f"[Kimi API] Task {task_id}/{module} - 达到最大续生成次数({max_continuation})，返回已生成内容")
+        return "".join(all_content), log_file if 'log_file' in locals() else ""
     
-    def _call_claude(self, messages: list, temperature: float = 0.7, max_retries: int = 3) -> str:
+    def _call_claude_with_continuation(
+        self,
+        messages: list,
+        task_id: str,
+        module: str,
+        temperature: float = 0.7,
+        max_retries: int = 3
+    ) -> Tuple[str, str]:
         """
-        调用 Claude API（用于生成仿真代码，支持更长输出）
-        
-        Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_retries: 最大重试次数
+        调用 Claude API，支持自动续生成
         
         Returns:
-            AI 回复内容
+            (content, log_file_path)
         """
         import time
         
@@ -164,626 +492,376 @@ class AIService:
             "Anthropic-Version": "2023-06-01"
         }
         
-        # 从环境变量读取模型名称，默认使用 claude-3-5-sonnet 
-        model = getattr(settings, 'CLAUDE_MODEL', 'claude-opus-4-5-20251101') # 不要更改
+        model = self.claude_model
+        all_content = []
+        current_messages = messages.copy()
+        max_continuation = 5
         
-        # 转换消息格式为 Claude 格式
+        # 分离 system 和 user 消息
         system_msg = ""
         user_messages = []
-        for msg in messages:
+        for msg in current_messages:
             if msg.get("role") == "system":
                 system_msg = msg.get("content", "")
             else:
                 user_messages.append(msg)
         
-        # 构建请求体
-        data = {
-            "model": model,
-            "max_tokens": 8192,  # Claude 支持 8k 输出
-            "temperature": temperature,
-            "messages": user_messages
-        }
-        if system_msg:
-            data["system"] = system_msg
+        # 记录完整 Prompt 到 ai_server.log
+        self._log_full_prompt(task_id, module, "claude", messages)
         
-        last_error = None
-        start_time = time.time()
-        
-        for attempt in range(max_retries):
-            attempt_start = time.time()
-            logger.info(f"[Claude API] 尝试 {attempt + 1}/{max_retries}")
+        for attempt in range(max_continuation):
+            data = {
+                "model": model,
+                "max_tokens": 8192,
+                "temperature": temperature,
+                "messages": user_messages
+            }
+            if system_msg:
+                data["system"] = system_msg
+            
+            logger.info(f"[Claude API] Task {task_id}/{module} - 调用 #{attempt + 1}")
             
             try:
                 response = requests.post(
-                    # "https://api.anthropic.com/v1/messages",
-                    "https://xiaoai.plus/v1/messages",
+                    f"{self.claude_base_url}/messages",
                     headers=headers,
                     json=data,
                     timeout=360
                 )
                 
-                elapsed = time.time() - attempt_start
-                logger.info(f"[Claude API] 响应状态: {response.status_code} | 耗时: {elapsed:.2f}s")
-                
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 5))
-                    logger.warning(f"[Claude API] 触发限流 (429)，等待 {retry_after}s 后重试")
-                    time.sleep(retry_after)
-                    continue
-                
                 if response.status_code != 200:
-                    error_body = response.text[:500]
-                    logger.error(f"[Claude API] HTTP 错误: {response.status_code} | 响应: {error_body}")
-                    last_error = f"HTTP {response.status_code}: {error_body}"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        time.sleep(wait_time)
-                    continue
+                    error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
+                    logger.error(f"[Claude API] 错误: {error_msg}")
+                    raise Exception(error_msg)
                 
                 result = response.json()
+                content = result["content"][0]["text"]
+                stop_reason = result.get("stop_reason", "unknown")
+                usage = result.get("usage", {})
                 
-                # 保存原始响应到日志文件以便调试
-                import os
-                from datetime import datetime
-                log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs', 'claude_responses')
-                os.makedirs(log_dir, exist_ok=True)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-                log_file = os.path.join(log_dir, f'claude_response_{timestamp}.json')
-                try:
-                    with open(log_file, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, ensure_ascii=False, indent=2)
-                    logger.debug(f"[Claude API] 原始响应已保存到: {log_file}")
-                except Exception as e:
-                    logger.warning(f"[Claude API] 保存响应日志失败: {e}")
+                all_content.append(content)
                 
-                # 处理不同的响应格式
-                content = None
-                extracted_format = None
+                logger.info(f"[Claude API] Task {task_id}/{module} - 收到响应, stop_reason={stop_reason}, tokens={usage.get('output_tokens', 0)}")
                 
-                # 尝试标准 Claude 格式
-                if "content" in result and result["content"]:
-                    if isinstance(result["content"], list) and len(result["content"]) > 0:
-                        if "text" in result["content"][0]:
-                            content = result["content"][0]["text"]
-                            extracted_format = "claude_standard"
-                        elif "value" in result["content"][0]:
-                            content = result["content"][0]["value"]
-                            extracted_format = "claude_value"
+                # 保存响应日志
+                log_file = self._save_claude_response(task_id, module, result, content)
                 
-                # 尝试 OpenAI 兼容格式
-                if not content and "choices" in result and result["choices"]:
-                    choice = result["choices"][0]
-                    if "message" in choice and "content" in choice["message"]:
-                        content = choice["message"]["content"]
-                        extracted_format = "openai_compatible"
-                    elif "text" in choice:
-                        content = choice["text"]
-                        extracted_format = "openai_text"
+                # 检查内容完整性
+                is_complete, check_msg = self.validator.check_simulation_complete("".join(all_content))
+                logger.info(f"[Claude API] Task {task_id}/{module} - 完整性检查: {check_msg}")
                 
-                # 尝试直接 content 字段
-                if not content and "content" in result and isinstance(result["content"], str):
-                    content = result["content"]
-                    extracted_format = "direct_content"
+                # 如果内容完整或不是因为长度截断，结束生成
+                if is_complete or stop_reason != "max_tokens":
+                    if not is_complete:
+                        logger.warning(f"[Claude API] Task {task_id}/{module} - 内容可能不完整，但非长度原因: {check_msg}")
+                    return "".join(all_content), log_file
                 
-                # 尝试 data.choices 格式
-                if not content and "data" in result and "choices" in result["data"]:
-                    content = result["data"]["choices"][0].get("message", {}).get("content", "")
-                    extracted_format = "data_choices"
+                # 需要续生成
+                logger.info(f"[Claude API] Task {task_id}/{module} - 内容不完整，继续生成...")
                 
-                # 尝试嵌套在 data 中的 content
-                if not content and "data" in result and isinstance(result["data"], dict):
-                    if "content" in result["data"]:
-                        data_content = result["data"]["content"]
-                        if isinstance(data_content, list) and len(data_content) > 0:
-                            content = data_content[0].get("text", "")
-                            extracted_format = "data_content_list"
-                        elif isinstance(data_content, str):
-                            content = data_content
-                            extracted_format = "data_content_string"
+                # 检查是否返回了重复内容（避免浪费 token）
+                if all_content and self._is_duplicate_content(all_content[-1], content):
+                    logger.warning(f"[Claude API] Task {task_id}/{module} - 检测到重复内容，停止续生成")
+                    break
                 
-                if not content:
-                    logger.error(f"[Claude API] 响应结构异常，无法解析。原始响应已保存到: {log_file}")
-                    logger.error(f"[Claude API] 响应内容: {json.dumps(result, ensure_ascii=False)[:1000]}")
-                    raise ValueError(f"Invalid API response structure: cannot extract content. Log saved to: {log_file}")
+                # 添加已生成的内容到上下文
+                user_messages.append({
+                    "role": "assistant",
+                    "content": content
+                })
+                user_messages.append({
+                    "role": "user",
+                    "content": "请继续生成剩余内容，保持代码格式一致，完成未闭合的函数和标签。从上次中断的地方继续，不要重复已生成的代码。"
+                })
                 
-                logger.info(f"[Claude API] 响应格式: {extracted_format}")
-                
-                total_elapsed = time.time() - start_time
-                
-                logger.info(f"[Claude API] 调用成功 | 总耗时: {total_elapsed:.2f}s | 响应长度: {len(content)} 字符")
-                logger.debug(f"[Claude API] 响应预览: {content[:200]}...")
-                
-                return content
-                
-            except requests.exceptions.Timeout as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"请求超时 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Claude API] 超时错误 (attempt {attempt + 1}): {last_error}")
-                if attempt < max_retries - 1:
-                    wait_time = min(2 ** attempt * 2, 30)
-                    time.sleep(wait_time)
-                    
-            except requests.exceptions.RequestException as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"请求异常 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Claude API] 请求异常 (attempt {attempt + 1}): {last_error}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    time.sleep(wait_time)
-                    
             except Exception as e:
-                elapsed = time.time() - attempt_start
-                last_error = f"未知错误 ({elapsed:.1f}s): {str(e)}"
-                logger.error(f"[Claude API] 未知错误 (attempt {attempt + 1}): {last_error}", exc_info=True)
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    time.sleep(wait_time)
+                logger.error(f"[Claude API] Task {task_id}/{module} - 调用失败: {e}")
+                raise
         
-        # 所有重试都失败
-        total_elapsed = time.time() - start_time
-        final_error = f"[Claude API] 调用失败（{max_retries} 次尝试后放弃）| 总耗时: {total_elapsed:.2f}s | 最后错误: {last_error}"
-        logger.error(final_error)
-        raise Exception(final_error)
+        # 达到最大续生成次数
+        logger.warning(f"[Claude API] Task {task_id}/{module} - 达到最大续生成次数({max_continuation})，返回已生成内容")
+        return "".join(all_content), log_file if 'log_file' in locals() else ""
     
-    def generate_outline(self, course: str, knowledge_point: str, difficulty: str = "medium") -> Dict[str, Any]:
-        """
-        生成教学大纲
+    # ============ 对外接口 ============
+    
+    def generate_outline_with_config(
+        self,
+        course: str,
+        knowledge_point: str,
+        config: dict,
+        task_id: str = "unknown"
+    ) -> dict:
+        """使用配置生成大纲"""
+        prompt = build_outline_prompt(course, knowledge_point, config)
         
-        Args:
-            course: 课程名称
-            knowledge_point: 知识点
-            difficulty: 难度等级 (easy, medium, hard)
-        
-        Returns:
-            大纲 JSON 数据
-        """
-        prompt = f"""你是一位资深教授，为本科生设计专业、深入的教学大纲。请为以下课程知识点生成结构化的教学大纲。
-
-## 课程信息
-- 课程：{course}
-- 知识点：{knowledge_point}
-- 难度：{difficulty}
-
-## 大纲结构要求
-每个章节的 content 必须是字符串数组，每个元素是一个具体的教学要点（不是标题，而是需要讲解的具体内容）。
-
-### 1. concept - 知识点概念（4-6个要点）
-必须包含：
-- 严格的数学定义（含公式）
-- 物理意义/几何解释
-- 定理/定律的完整表述
-- 适用条件和边界
-- 与相关概念的区别
-
-### 2. explanation - 详细讲解（5-7个要点）
-必须包含：
-- 原理的数学推导（关键步骤）
-- 不同角度的理解方式
-- 典型实例1：简单情况（含具体数值）
-- 典型实例2：复杂情况（含具体数值）
-- 工程应用背景
-- 参数对结果的影响分析
-
-### 3. difficulties - 重难点分析（4-5个要点）
-必须包含：
-- 学生最常见的理解误区及纠正
-- 数学推导中的关键难点
-- 实际应用中的注意事项
-- 与其他知识点的混淆点对比
-- 进阶思考/拓展问题
-
-### 4. simulation - 交互仿真（2-3个要点，暂不实现，仅描述）
-- 仿真目标和观察指标
-- 可调参数及其物理意义
-
-### 5. summary - 总结（4-5个要点）
-必须包含：
-- 核心公式回顾
-- 关键概念梳理
-- 适用场景总结
-- 与后续知识点的联系
-
-### 6. exercises - 习题与答案（4-5个要点）
-必须包含：
-- 基础题：直接应用公式（含具体数值）
-- 提高题：综合应用（含具体数值）
-- 设计题：实际工程问题
-- 证明题：重要定理的证明
-
-## 输出格式
-请以 JSON 格式返回，结构如下：
-{{
-    "title": "{course} - {knowledge_point}",
-    "sections": [
-        {{
-            "id": "concept",
-            "title": "知识点概念",
-            "content": ["严格数学定义：...", "物理意义：...", "定理表述：...", "适用条件：..."],
-            "order": 1
-        }},
-        {{
-            "id": "explanation",
-            "title": "详细讲解",
-            "content": ["数学推导：...", "实例1：...", "实例2：...", "工程应用：..."],
-            "order": 2
-        }},
-        {{
-            "id": "difficulties",
-            "title": "重难点分析",
-            "content": ["常见误区：...", "推导难点：...", "应用注意：..."],
-            "order": 3
-        }},
-        {{
-            "id": "simulation",
-            "title": "交互仿真",
-            "content": ["仿真目标：...", "可调参数：..."],
-            "order": 4
-        }},
-        {{
-            "id": "summary",
-            "title": "总结",
-            "content": ["核心公式：...", "关键概念：...", "适用场景：..."],
-            "order": 5
-        }},
-        {{
-            "id": "exercises",
-            "title": "习题与答案",
-            "content": ["基础题：...", "提高题：...", "设计题：..."],
-            "order": 6
-        }}
-    ]
-}}
-
-## 重要规则
-- content 必须是字符串数组，每个元素是具体的教学内容描述
-- 要点要具体、可执行，不是泛泛的标题
-- 包含具体的数值、公式、案例细节
-- 不要返回对象数组或嵌套结构
-- 不要返回 [object Object] 这种无效内容
-
-只返回 JSON，不要其他说明。"""
-
         messages = [
             {"role": "system", "content": "你是一个专业的教育内容设计师，擅长生成结构化的教学大纲。严格遵守输出格式要求。"},
             {"role": "user", "content": prompt}
         ]
         
+        content, log_file = self._call_kimi_with_continuation(
+            messages=messages,
+            task_id=task_id,
+            module="outline",
+            temperature=0.7
+        )
+        
+        # 解析 JSON
         try:
-            response = self._call_kimi(messages, temperature=0.7)
-            # 解析 JSON
-            # 清理可能的 markdown 代码块
-            response = response.strip()
-            if response.startswith("```json"):
-                response = response[7:]
-            if response.startswith("```"):
-                response = response[3:]
-            if response.endswith("```"):
-                response = response[:-3]
-            response = response.strip()
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
             
-            outline = json.loads(response)
-            
-            # 验证并清理大纲数据
+            outline = json.loads(content)
             outline = self._validate_and_clean_outline(outline)
-            
-            logger.info(f"Generated outline for {course} - {knowledge_point}")
             return outline
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse outline JSON: {e}")
-            # 返回默认大纲结构
-            return self._get_default_outline(course, knowledge_point)
-        except Exception as e:
-            logger.error(f"Failed to generate outline: {e}")
+            logger.error(f"[AI Service] Task {task_id} - 大纲 JSON 解析失败: {e}")
             return self._get_default_outline(course, knowledge_point)
     
-    def _validate_and_clean_outline(self, outline: Dict[str, Any]) -> Dict[str, Any]:
-        """验证并清理大纲数据，修复常见问题"""
-        sections = outline.get("sections", [])
-        
-        for section in sections:
-            content = section.get("content", [])
-            
-            # 确保 content 是列表
-            if not isinstance(content, list):
-                content = [str(content)] if content else []
-            
-            # 清理列表中的无效内容
-            cleaned_content = []
-            for item in content:
-                item_str = str(item)
-                # 跳过 [object Object] 等无效内容
-                if item_str == "[object Object]" or not item_str.strip():
-                    continue
-                cleaned_content.append(item_str)
-            
-            # 如果清理后为空，添加默认内容
-            if not cleaned_content:
-                section_title = section.get("title", "")
-                cleaned_content = [f"{section_title}内容待补充"]
-            
-            section["content"] = cleaned_content
-        
-        return outline
-
-    def _clean_markdown_code_blocks(self, text: str) -> str:
-        """清理 Markdown 代码块标记"""
-        text = text.strip()
-        # 处理 ```html 开头的代码块
-        if text.startswith("```html"):
-            text = text[7:]
-        elif text.startswith("```HTML"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        # 处理结尾的 ```
-        if text.endswith("```"):
-            text = text[:-3]
-        return text.strip()
-
-    def generate_section_content(self, section_title: str, section_key_points: list, course: str, knowledge_point: str) -> str:
-        """
-        生成章节详细内容
-        
-        Args:
-            section_title: 章节标题
-            section_key_points: 章节要点
-            course: 课程名称
-            knowledge_point: 知识点
-        
-        Returns:
-            HTML 格式的内容
-        """
-        key_points_str = "\n".join([f"- {point}" for point in section_key_points])
-        
-        prompt = f"""你是一位在高校执教20年的资深教授，擅长把复杂的工程概念用生动的语言讲清楚。请为以下章节撰写教学内容，像在课堂上讲课一样自然流畅。
-
-## 课程信息
-- 课程：{course}
-- 知识点：{knowledge_point}
-- 章节：{section_title}
-- 学生水平：本科工科生，有一定数学基础但缺乏工程直觉
-
-## 需要覆盖的核心内容
-{key_points_str}
-
-## 教学风格要求（非常重要）
-1. **像讲课一样写作**：
-   - 用"我们"、"大家"、"同学们"等称呼，营造课堂氛围
-   - 适当使用设问："那么问题来了..."、"大家有没有想过..."
-   - 加入教授的思考和经验："我在工程实践中发现..."、"很多同学在这里会犯一个错误..."
-
-2. **从直观到抽象**：
-   - 先用生活化例子或物理直觉引入（如开车、调音量、温度控制等）
-   - 再逐步过渡到数学定义和公式
-   - 最后回到工程应用，形成闭环
-
-3. **内容组织灵活多样**：
-   - 不要机械地1.2.3.4编号，根据内容特点选择最适合的结构
-   - 可以用"故事线"、"问题驱动"、"对比分析"、"案例研究"等多种形式
-   - 允许有"知识卡片"、"思考题"、"延伸阅读"等灵活板块
-
-4. **真实教学场景**：
-   - 包含"常见错误"：指出学生容易混淆的地方
-   - 包含"教授提示"：分享考试重点、记忆技巧、工程经验
-   - 包含"互动思考"：提出让学生暂停思考的问题
-   - 包含"历史背景"：知识点的发展历史、重要人物
-
-5. **公式讲解生动**：
-   - 每个公式都要解释"为什么长这样"
-   - 用物理意义解释每一项的作用
-   - 通过量纲分析验证合理性
-
-## HTML 格式要求
-1. 最外层使用 <div class="section-content">
-2. 章节主标题使用 <h3>{section_title}</h3>
-3. 小节标题用 <h4>，但标题要生动（如"为什么需要微分项？"而不是"3. 微分控制"）
-4. 段落使用 <p>，重要概念用 <strong> 加粗
-5. 公式使用 $...$ 行内或 $$...$$ 块级
-6. 使用 <div class="tip"> 放置教授提示、记忆技巧
-7. 使用 <div class="warning"> 放置常见错误、易混淆点
-8. 可以使用 <blockquote> 放置名言、历史背景
-9. 不要包含 html/head/body 标签
-10. **结构要求**：div 嵌套要清晰，section-content 内直接是 h3 + 多个段落/小节，不要过多嵌套
-
-## 优秀教学内容的例子
-
-❌ 死板的写法：
-"1. 数学定义：PD控制器的输出为 u(t) = Kp*e(t) + Kd*de/dt"
-
-✅ 生动的写法：
-"我们先从一个生活场景说起。想象你在开车，目标是保持车速在60km/h。这时候你会怎么做？
-
-首先，你会看仪表盘，发现实际速度是55km/h——这就是'偏差'。你心里想：'慢了5公里，得踩油门'。踩多少呢？如果你是个急性子，可能会猛踩；如果比较谨慎，就轻踩。这种'根据偏差大小决定动作强弱'的直觉，就是比例控制的思想。
-
-但等等，如果前面是个上坡呢？你刚踩完油门，发现车速还在往下掉。这时候老司机都知道：'坡度在变大，得提前多踩点'。这种'根据变化趋势提前动作'的智慧，就是微分控制的精髓。
-
-把这两种直觉写成数学语言，就得到了PD控制器的核心公式：$$u(t) = K_p e(t) + K_d \\frac{{de(t)}}{{dt}}$$"
-
-请生成像上面这样生动、有温度、有故事的教学 HTML 内容。"""
+    def generate_section_content_with_config(
+        self,
+        section_title: str,
+        section_key_points: list,
+        course: str,
+        knowledge_point: str,
+        config: dict,
+        task_id: str = "unknown",
+        context: dict = None
+    ) -> str:
+        """使用配置生成章节内容（支持上下文连贯性）"""
+        prompt = build_section_prompt(section_title, section_key_points, course, knowledge_point, config, context)
 
         messages = [
-            {"role": "system", "content": "你是教育内容专家，生成统一结构的高质量HTML教学内容。严格遵守HTML结构要求。"},
+            {"role": "system", "content": "你是教育内容专家，生成统一结构的高质量HTML教学内容。注意与前后章节保持连贯性。"},
             {"role": "user", "content": prompt}
         ]
-        
-        try:
-            response = self._call_kimi(messages, temperature=0.7)
-            cleaned = self._clean_markdown_code_blocks(response)
-            
-            # 统一包装结构
-            cleaned = self._normalize_html_structure(cleaned, section_title)
-            
-            # 转换公式格式 \( \) -> $, \[ \] -> $$
-            cleaned = self._convert_math_delimiters(cleaned)
-            
-            logger.info(f"Generated section '{section_title}', length: {len(cleaned)}")
-            return cleaned
-        except Exception as e:
-            logger.error(f"Failed to generate section content for '{section_title}': {e}")
-            # 返回更详细的错误信息
-            error_html = f'''<div class="section-content">
-<div class="warning">
-    <strong>内容生成失败</strong>
-    <p>章节：{section_title}</p>
-    <p>错误：{str(e)[:200]}</p>
-    <p>请稍后重试或联系管理员</p>
-</div>
-</div>'''
-            return error_html
-    
-    def _normalize_html_structure(self, html: str, section_title: str) -> str:
-        """规范化 HTML 结构，确保统一格式和清晰的 div 嵌套"""
-        import re
-        
-        html = html.strip()
-        
-        # 移除可能存在的结构性标签（避免嵌套混乱）
-        html = re.sub(r'</?(main|section|article|aside|header|footer)[^>]*>', '', html, flags=re.IGNORECASE)
-        
-        # 如果已经有 section-content 包装
-        if html.startswith('<div class="section-content">'):
-            # 检查内部是否有多余的 section-content 嵌套
-            # 统计 section-content 的数量
-            open_count = html.count('<div class="section-content">')
-            if open_count > 1:
-                # 移除内部的 section-content 包装，只保留最外层
-                html = re.sub(r'<div class="section-content">', '', html, count=open_count-1)
-                html = re.sub(r'</div>(?=\s*</div>\s*$)', '', html, count=open_count-1)
-            
-            # 检查是否有 h3 标题
-            h3_match = re.search(r'<h3>(.*?)</h3>', html)
-            if not h3_match:
-                # 在 section-content 开始后添加 h3
-                html = html.replace('<div class="section-content">', f'<div class="section-content">\n<h3>{section_title}</h3>', 1)
-            return html
-        
-        # 如果没有 section-content 包装，添加包装
-        # 检查是否已有 h3
-        h3_match = re.search(r'<h3>(.*?)</h3>', html)
-        if not h3_match:
-            html = f'<h3>{section_title}</h3>\n{html}'
-        
-        # 包装在 section-content 中
-        return f'<div class="section-content">\n{html}\n</div>'
-    
-    def _convert_math_delimiters(self, html: str) -> str:
-        """转换数学公式分隔符 \( \) -> $, \[ \] -> $$"""
-        import re
-        
-        # 转换行内公式 \( ... \) -> $ ... $
-        # 使用非贪婪匹配，处理多行内容
-        html = re.sub(r'\\\((.*?)\\\)', r'$\1$', html, flags=re.DOTALL)
-        
-        # 转换块级公式 \[ ... \] -> $$ ... $$
-        html = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', html, flags=re.DOTALL)
-        
-        return html
 
-    def generate_simulation_code(self, simulation_desc: str, course: str, knowledge_point: str) -> str:
+        content, log_file = self._call_kimi_with_continuation(
+            messages=messages,
+            task_id=task_id,
+            module="section",
+            temperature=0.7
+        )
+
+        # 后处理
+        content = self._clean_markdown_code_blocks(content)
+        content = self._normalize_html_structure(content, section_title)
+        content = self._convert_math_delimiters(content)
+
+        return content
+    
+    def generate_simulation_code_with_config(
+        self,
+        simulation_desc: str,
+        course: str,
+        knowledge_point: str,
+        simulation_types: list,
+        config: dict,
+        task_id: str = "unknown",
+        context: dict = None
+    ) -> str:
         """
-        生成交互仿真代码
+        使用配置生成交互仿真代码
+
+        支持通过 SIMULATION_PROVIDER 配置选择使用 Kimi 或 Claude
         
         Args:
             simulation_desc: 仿真描述
             course: 课程名称
             knowledge_point: 知识点
-        
-        Returns:
-            JavaScript 代码字符串
+            simulation_types: 仿真类型列表
+            config: 配置字典
+            task_id: 任务ID
+            context: 上下文信息，包含前置章节的核心概念和公式
         """
-        prompt = f"""Generate interactive HTML5 Canvas simulation for {knowledge_point} ({course}).
-
-Requirements: {simulation_desc}
-
-STRICT OUTPUT RULES:
-1. Return ONLY content inside <div class="simulation-container">, NO html/head/body tags
-2. Wrap ALL JS in (function(){{...}})(); IIFE, NO global variables
-3. Use canvas ID: sim-canvas-abc123
-4. Canvas: 700x480px, border-radius:12px, box-shadow
-
-REQUIRED ELEMENTS:
-- Centered <h4> title (color:#3b82f6) and <p> description
-- Data panel: gradient div with 2-3 large number displays
-- Canvas with grid, axes, and curve legend
-- Controls: 2-4 sliders with live values, Start/Pause/Reset buttons, 2-3 preset buttons
-
-JS REQUIREMENTS:
-- Use requestAnimationFrame for animation
-- Redraw immediately on parameter change
-- Multiple curves with different colors
-- COMPLETE, RUNNABLE code only"""
-
-        messages = [
-            {"role": "system", "content": "You are an expert in creating interactive HTML5 Canvas simulations for education. Write clean, complete, runnable code with proper HTML structure."},
-            {"role": "user", "content": prompt}
-        ]
+        prompt = build_simulation_prompt(simulation_desc, course, knowledge_point, simulation_types, config, context)
         
-        try:
-            # 使用 Claude 生成仿真代码（支持更长输出）
-            if self.claude_api_key:
-                logger.info("Using Claude API for simulation generation")
-                response = self._call_claude(messages, temperature=0.7)
-            else:
-                logger.info("Claude API key not set, falling back to Kimi")
-                response = self._call_kimi(messages, temperature=0.8)
+        # 获取仿真生成 provider 配置
+        provider = getattr(settings, 'SIMULATION_PROVIDER', 'kimi').lower()
+        
+        if provider == 'claude':
+            # 使用 Claude 生成仿真
+            logger.info(f"[Simulation] Task {task_id} - 使用 Claude 生成仿真")
+            messages = [
+                {"role": "system", "content": "You are an expert in creating interactive HTML5 Canvas simulations for education. Write clean, complete, runnable code with proper HTML structure."},
+                {"role": "user", "content": prompt}
+            ]
             
-            cleaned = self._clean_markdown_code_blocks(response)
+            content, log_file = self._call_claude_with_continuation(
+                messages=messages,
+                task_id=task_id,
+                module="simulation",
+                temperature=0.7
+            )
+        else:
+            # 默认使用 Kimi 生成仿真
+            logger.info(f"[Simulation] Task {task_id} - 使用 Kimi 生成仿真")
+            messages = [
+                {"role": "system", "content": "你是交互式 HTML5 Canvas 仿真代码专家。编写干净、完整、可运行的教育仿真代码，使用中文注释和界面标签。"},
+                {"role": "user", "content": prompt}
+            ]
             
-            # Post-process to extract simulation content
-            cleaned = self._extract_simulation_content(cleaned)
-            
-            logger.info(f"Generated simulation code, length: {len(cleaned)}")
-            return cleaned
-        except Exception as e:
-            logger.error(f"Failed to generate simulation code: {e}")
-            error_html = f'''<div class="section-content">
-<div class="warning">
-    <strong>仿真代码生成失败</strong>
-    <p>错误：{str(e)[:200]}</p>
-    <p>请稍后重试或联系管理员</p>
-</div>
-</div>'''
-            return error_html
+            content, log_file = self._call_kimi_with_continuation(
+                messages=messages,
+                task_id=task_id,
+                module="simulation",
+                temperature=0.7
+            )
+        
+        # 后处理
+        content = self._clean_markdown_code_blocks(content)
+        content = self._extract_simulation_content(content)
+        
+        return content
+    
+    # ============ 工具方法 ============
+    
+    def _clean_markdown_code_blocks(self, text: str) -> str:
+        """清理 markdown 代码块标记"""
+        text = text.strip()
+        if text.startswith("```html"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        return text.strip()
     
     def _extract_simulation_content(self, html: str) -> str:
-        """Extract simulation content and remove extra HTML structure tags."""
+        """提取仿真内容"""
+        import re
+        
+        # 查找 simulation-container div - 使用计数方式匹配最外层标签
+        start_match = re.search(r'<div class="simulation-container"[^>]*>', html, re.IGNORECASE)
+        if start_match:
+            start_pos = start_match.start()
+            pos = start_match.end()
+            depth = 1
+            
+            while pos < len(html) and depth > 0:
+                # 查找下一个 div 标签（开启或闭合）
+                next_open = html.find('<div', pos)
+                next_close = html.find('</div>', pos)
+                
+                # 如果没有更多标签，跳出
+                if next_open == -1 and next_close == -1:
+                    break
+                
+                # 确定下一个标签是什么
+                if next_open != -1 and (next_close == -1 or next_open < next_close):
+                    # 找到开启标签，检查是否是自闭合
+                    tag_end = html.find('>', next_open)
+                    if tag_end != -1:
+                        tag_content = html[next_open:tag_end+1]
+                        # 不是自闭合标签（没有 / 结尾）
+                        if not tag_content.rstrip().endswith('/>'):
+                            depth += 1
+                        pos = tag_end + 1
+                    else:
+                        break
+                else:
+                    # 找到闭合标签
+                    depth -= 1
+                    pos = next_close + 6  # len('</div>') = 6
+                    
+                    if depth == 0:
+                        # 找到最外层闭合标签
+                        container_content = html[start_pos:pos]
+                        
+                        # 检查后面是否有 <script> 或 <style> 标签（Kimi 有时会放在外面）
+                        remaining = html[pos:].strip()
+                        
+                        # 提取 script 和 style 标签
+                        script_match = re.search(r'<script>.*?</script>', remaining, re.DOTALL | re.IGNORECASE)
+                        style_match = re.search(r'<style>.*?</style>', remaining, re.DOTALL | re.IGNORECASE)
+                        
+                        # 如果 script/style 在容器外面，需要把它们移到容器内
+                        if script_match or style_match:
+                            # 移除容器闭合标签
+                            container_without_close = container_content[:-6]  # 移除 </div>
+                            
+                            # 按正确顺序添加 style 和 script
+                            additional_content = ""
+                            if style_match:
+                                additional_content += style_match.group(0)
+                            if script_match:
+                                additional_content += script_match.group(0)
+                            
+                            # 重新组装
+                            return container_without_close + additional_content + "</div>"
+                        
+                        return container_content
+        
+        # 如果没有找到，返回原始内容
+        return html
+    
+    def _normalize_html_structure(self, html: str, section_title: str) -> str:
+        """规范化 HTML 结构"""
         import re
         
         html = html.strip()
+        html = re.sub(r'</?(main|section|article|aside|header|footer)[^>]*>', '', html, flags=re.IGNORECASE)
         
-        # If already correct format, return directly
-        if html.startswith('<div class="simulation-container">') or html.startswith("<div class='simulation-container'>"):
+        if html.startswith('<div class="section-content">'):
+            open_count = html.count('<div class="section-content">')
+            if open_count > 1:
+                html = re.sub(r'<div class="section-content">', '', html, count=open_count-1)
+                html = re.sub(r'</div>(?=\s*</div>\s*$)', '', html, count=open_count-1)
+            
+            h3_match = re.search(r'<h3>(.*?)</h3>', html)
+            if not h3_match:
+                html = html.replace('<div class="section-content">', f'<div class="section-content">\n<h3>{section_title}</h3>', 1)
             return html
         
-        # Try to extract body content from full HTML document
-        body_match = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-        if body_match:
-            body_content = body_match.group(1).strip()
-            # If simulation-container exists in body, extract it
-            sim_match = re.search(r'(<div class=["\']simulation-container["\']>.*?</div>)', body_content, re.DOTALL | re.IGNORECASE)
-            if sim_match:
-                return sim_match.group(1)
-            # Otherwise wrap entire body content
-            return f'<div class="simulation-container">\n{body_content}\n</div>'
+        h3_match = re.search(r'<h3>(.*?)</h3>', html)
+        if not h3_match:
+            html = f'<h3>{section_title}</h3>\n{html}'
         
-        # Try to find simulation-container directly
-        sim_match = re.search(r'(<div class=["\']simulation-container["\']>.*?</div>)', html, re.DOTALL | re.IGNORECASE)
-        if sim_match:
-            return sim_match.group(1)
-        
-        # Remove html/head/body tags and wrap
-        html = re.sub(r'<!DOCTYPE[^>]*>', '', html, flags=re.IGNORECASE)
-        html = re.sub(r'</?html[^>]*>', '', html, flags=re.IGNORECASE)
-        html = re.sub(r'<head[^>]*>.*?</head>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'</?body[^>]*>', '', html, flags=re.IGNORECASE)
-        
-        html = html.strip()
-        
-        if not html.startswith('<'):
-            html = f'<p>{html}</p>'
-        
-        return f'<div class="simulation-container">\n{html}\n</div>'
+        return f'<div class="section-content">\n{html}\n</div>'
     
+    def _convert_math_delimiters(self, html: str) -> str:
+        """转换数学公式分隔符"""
+        import re
+        html = re.sub(r'\\\((.*?)\\\)', r'$\1$', html, flags=re.DOTALL)
+        html = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', html, flags=re.DOTALL)
+        return html
+    
+    def _validate_and_clean_outline(self, outline: dict) -> dict:
+        """验证并清理大纲数据"""
+        if not outline.get("sections"):
+            outline["sections"] = []
+        
+        for i, section in enumerate(outline["sections"]):
+            section["order"] = i + 1
+            if not section.get("id"):
+                section["id"] = f"section_{i}"
+            if not section.get("title"):
+                section["title"] = f"章节 {i + 1}"
+            if not section.get("content"):
+                section["content"] = []
+        
+        return outline
+    
+    def _get_default_outline(self, course: str, knowledge_point: str) -> dict:
+        """获取默认大纲"""
+        return {
+            "title": f"{course} - {knowledge_point}",
+            "sections": [
+                {"id": "concept", "title": "知识点概念", "content": ["核心定义", "基本公式", "物理意义"], "order": 1},
+                {"id": "explanation", "title": "详细讲解", "content": ["原理分析", "数学推导", "实例说明"], "order": 2},
+                {"id": "difficulties", "title": "重难点分析", "content": ["常见难点", "易错点", "解题技巧"], "order": 3},
+                {"id": "simulation", "title": "交互仿真", "content": ["参数调节演示", "动态模拟"], "order": 4},
+                {"id": "summary", "title": "总结", "content": ["核心要点", "适用条件", "常见误区"], "order": 5},
+                {"id": "exercises", "title": "习题与答案", "content": ["基础练习", "进阶练习", "详细解答"], "order": 6}
+            ]
+        }
+
     def generate_complete_html(self, title: str, body_content: str) -> str:
         """
         生成完整的 HTML 文档（包含样式和 KaTeX）
@@ -1131,50 +1209,6 @@ JS REQUIREMENTS:
     </div>
 </body>
 </html>"""
-
-    def _get_default_outline(self, course: str, knowledge_point: str) -> Dict[str, Any]:
-        """获取默认大纲结构"""
-        return {
-            "title": f"{course} - {knowledge_point}",
-            "sections": [
-                {
-                    "id": "concept",
-                    "title": "知识点概念",
-                    "content": ["核心定义", "基本公式", "物理意义"],
-                    "order": 1
-                },
-                {
-                    "id": "explanation",
-                    "title": "详细讲解",
-                    "content": ["原理分析", "数学推导", "实例说明"],
-                    "order": 2
-                },
-                {
-                    "id": "difficulties",
-                    "title": "重难点分析",
-                    "content": ["常见难点", "易错点", "解题技巧"],
-                    "order": 3
-                },
-                {
-                    "id": "simulation",
-                    "title": "交互仿真",
-                    "content": ["参数调节演示", "动态模拟"],
-                    "order": 4
-                },
-                {
-                    "id": "summary",
-                    "title": "总结",
-                    "content": ["核心要点", "适用条件", "常见误区"],
-                    "order": 5
-                },
-                {
-                    "id": "exercises",
-                    "title": "习题与答案",
-                    "content": ["基础练习", "进阶练习", "详细解答"],
-                    "order": 6
-                }
-            ]
-        }
 
 
 # 全局 AI 服务实例

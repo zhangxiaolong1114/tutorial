@@ -2,16 +2,10 @@
 用户设备模型
 支持多设备登录管理
 """
-from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
-from app.core.database import Base
-
-
-def get_utc_now():
-    """获取当前 UTC 时间"""
-    return datetime.now(timezone.utc)
+from app.core.database import Base, get_now
 
 
 class UserDevice(Base):
@@ -23,7 +17,7 @@ class UserDevice(Base):
     device_fingerprint = Column(String(255), nullable=False)
     device_name = Column(String(100), nullable=True)  # 设备名称（如：Chrome on Windows）
     last_login_ip = Column(String(45), nullable=True)
-    last_login_at = Column(DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False)
+    last_login_at = Column(DateTime, default=get_now, onupdate=get_now, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)  # 是否允许该设备登录
     
     # 关联用户
