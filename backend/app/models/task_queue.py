@@ -48,6 +48,10 @@ class TaskQueue(Base):
     result = Column(Text, nullable=True)  # 成功时存储结果ID等
     error_message = Column(Text, nullable=True)  # 失败时存储错误信息
     
+    # 进度信息
+    progress = Column(Integer, default=0)  # 进度百分比 0-100
+    progress_detail = Column(Text, nullable=True)  # 进度详情（JSON格式）
+    
     # 关联资源ID（如生成的大纲ID）
     resource_id = Column(Integer, nullable=True)
     resource_type = Column(String(50), nullable=True)  # outline / document
@@ -94,6 +98,35 @@ class TaskQueue(Base):
             self.result = json.dumps(data, ensure_ascii=False)
         else:
             self.result = str(data)
+    
+    def get_progress_detail(self):
+        """解析进度详情"""
+        if not self.progress_detail:
+            return {}
+        try:
+            return json.loads(self.progress_detail)
+        except json.JSONDecodeError:
+            return {}
+    
+    def set_progress_detail(self, data):
+        """设置进度详情"""
+        if data is None:
+            self.progress_detail = None
+        elif isinstance(data, dict):
+            self.progress_detail = json.dumps(data, ensure_ascii=False)
+        else:
+            self.progress_detail = str(data)
+    
+    def update_progress(self, progress: int, detail: dict = None):
+        """更新进度
+        
+        Args:
+            progress: 进度百分比 0-100
+            detail: 进度详情字典，如 {'current_section': '概念讲解', 'section_index': 2, 'total_sections': 8}
+        """
+        self.progress = max(0, min(100, progress))
+        if detail:
+            self.set_progress_detail(detail)
     
     @property
     def duration_seconds(self):

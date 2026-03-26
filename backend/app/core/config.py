@@ -39,18 +39,30 @@ class Settings(BaseSettings):
     # AI API 配置
     KIMI_API_KEY: str = ""
     
-    # Claude API 配置（可选，用于仿真生成）
-    CLAUDE_API_KEY: str = ""
-    CLAUDE_BASE_URL: str = "https://xiaoai.plus/v1"  # Claude API 基础地址
-    CLAUDE_MODEL: str = "claude-opus-4-5-20251101"  # 默认模型
+    # DeepSeek API 配置
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     
-    # 仿真生成配置
-    SIMULATION_PROVIDER: str = "kimi"  # 可选: "kimi" 或 "claude"
-    SIMULATION_MODEL: str = "moonshot-v1-128k"  # Kimi 模型（当 provider=kimi 时使用）
+    # 通义千问 API 配置
+    QWEN_API_KEY: str = ""
+    QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    
+    # 智谱 GLM API 配置
+    GLM_API_KEY: str = ""
+    GLM_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+    
+    # Claude API 配置（已废弃，保留兼容性）
+    CLAUDE_API_KEY: str = ""
+    CLAUDE_BASE_URL: str = "https://xiaoai.plus/v1"
+    CLAUDE_MODEL: str = "claude-opus-4-5-20251101"
+    
+    # 仿真生成配置（已废弃，保留兼容性）
+    SIMULATION_PROVIDER: str = ""  # 可选: "kimi" 或 "claude"
+    SIMULATION_MODEL: str = ""  # Kimi 模型（当 provider=kimi 时使用）
     
     # 文件存储配置
-    STORAGE_TYPE: str = "database"  # database 或 filesystem
-    STORAGE_PATH: str = "./storage/documents"  # 文件系统存储路径
+    STORAGE_TYPE: str = ""  # database 或 filesystem
+    STORAGE_PATH: str = ""  # 文件系统存储路径
     
     class Config:
         env_file = ".env"

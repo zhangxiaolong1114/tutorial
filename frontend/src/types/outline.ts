@@ -20,12 +20,14 @@ export interface Outline {
 }
 
 import type { GenerationConfigCreate } from './generationConfig'
+import type { ModelConfig } from '../api/aiModels'
 
 export interface GenerateOutlineRequest {
   course: string
   knowledge_point: string
   difficulty: 'easy' | 'medium' | 'hard'
   config?: GenerationConfigCreate  // 可选的生成配置
+  model_config?: ModelConfig  // 可选的模型配置
 }
 
 export interface UpdateOutlineRequest {
@@ -39,6 +41,20 @@ export interface TaskResponse {
   message: string
 }
 
+export interface ProgressDetail {
+  phase?: string
+  current_section?: string
+  section_index?: number
+  total_sections?: number
+  message?: string
+}
+
+export interface ModelUsage {
+  task: string
+  model_id: string
+  section?: string
+}
+
 export interface TaskStatusResponse {
   task_id: number
   status: 'pending' | 'processing' | 'completed' | 'failed'
@@ -50,6 +66,10 @@ export interface TaskStatusResponse {
     outline_id?: number
     document_id?: number
     title?: string
+    models_used?: ModelUsage[]
   }
   error_message?: string
+  progress: number  // 0-100
+  progress_detail?: ProgressDetail
+  models_used?: ModelUsage[]
 }

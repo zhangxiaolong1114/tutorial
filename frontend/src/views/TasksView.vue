@@ -65,6 +65,18 @@
               <span v-if="task.result?.title" class="text-blue-600">{{ task.result.title }}</span>
             </div>
 
+            <!-- 使用的模型 -->
+            <div v-if="task.result?.models_used && task.result.models_used.length > 0"
+              class="mt-2 flex items-center gap-2">
+              <span class="text-xs text-gray-400">使用模型:</span>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="(model, idx) in getUniqueModels(task.result.models_used)" :key="idx"
+                  class="px-2 py-0.5 text-xs bg-indigo-50 text-indigo-600 rounded-full border border-indigo-100">
+                  {{ getModelDisplayName(model) }}
+                </span>
+              </div>
+            </div>
+
             <!-- 错误信息 -->
             <p v-if="task.error_message" class="mt-2 text-sm text-red-600">
               错误: {{ task.error_message }}
@@ -100,8 +112,12 @@
 
         <!-- 进度条 -->
         <div v-if="task.status === 'pending' || task.status === 'processing'" class="mt-4">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span>{{ taskProgressText(task) }}</span>
+            <span>{{ taskProgress(task) }}%</span>
+          </div>
           <div class="w-full bg-gray-200 rounded-full h-2">
-            <div class="bg-blue-600 h-2 rounded-full transition-all duration-1000"
+            <div class="bg-blue-600 h-2 rounded-full transition-all duration-500"
               :style="{ width: taskProgress(task) + '%' }">
             </div>
           </div>
@@ -209,10 +225,46 @@ const taskDescription = (task: TaskStatusResponse) => {
 }
 
 const taskProgress = (task: TaskStatusResponse) => {
+  // 使用后端返回的真实进度，如果没有则使用默认值
   if (task.status === 'completed') return 100
   if (task.status === 'failed') return 0
-  if (task.status === 'processing') return 60
-  return 20
+  if (task.progress && task.progress > 0) return task.progress
+  if (task.status === 'processing') return 10
+  return 5
+}
+
+const taskProgressText = (task: TaskStatusResponse) => {
+  // 生成进度描述文本
+  if (task.status === 'completed') return '已完成'
+  if (task.status === 'failed') return '失败'
+  if (task.progress_detail?.message) {
+    return task.progress_detail.message
+  }
+  if (task.progress && task.progress > 0) {
+    return `处理中 (${task.progress}%)`
+  }
+  return task.status === 'processing' ? '处理中...' : '等待中...'
+}
+
+// 模型显示名称映射
+const modelDisplayNames: Record<string, string> = {
+  'kimi-k2.5': 'Kimi K2.5',
+  'deepseek-reasoner': 'DeepSeek Reasoner',
+  'deepseek-chat': 'DeepSeek Chat',
+  'Qwen-3.5-Plus': '通义千问 3.5 Plus',
+  'MiniMax-M2.5': 'MiniMax M2.5',
+  'glm-5': 'GLM-5'
+}
+
+// 获取模型显示名称
+const getModelDisplayName = (modelId: string): string => {
+  return modelDisplayNames[modelId] || modelId
+}
+
+// 获取唯一的模型列表
+const getUniqueModels = (models: Array<{ model_id: string }>): string[] => {
+  const unique = new Set(models.map(m => m.model_id))
+  return Array.from(unique)
 }
 
 const formatTime = (timeStr: string) => {

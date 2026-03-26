@@ -1,5 +1,6 @@
 import api from './index'
 import type { Outline, GenerateOutlineRequest, UpdateOutlineRequest, TaskResponse, TaskStatusResponse } from '../types/outline'
+import type { ModelConfig } from './aiModels'
 
 // 生成大纲（异步）
 export const generateOutline = async (data: GenerateOutlineRequest): Promise<TaskResponse> => {
@@ -17,8 +18,8 @@ export const updateOutline = async (id: string, data: UpdateOutlineRequest): Pro
 }
 
 // 生成文档（异步）
-export const generateDocument = async (id: string): Promise<TaskResponse> => {
-  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, {})
+export const generateDocument = async (id: string, modelConfig?: ModelConfig): Promise<TaskResponse> => {
+  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, { model_config: modelConfig })
 }
 
 // 获取任务状态

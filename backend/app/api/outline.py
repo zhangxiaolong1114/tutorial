@@ -42,6 +42,9 @@ class OutlineGenerateRequest(BaseModel):
     
     # 生成配置（可选，不传则使用默认配置）
     config: Optional[dict] = Field(default=None, description="生成配置")
+    
+    # 模型配置（可选，指定各任务使用的AI模型）
+    ai_model_config: Optional[dict] = Field(default=None, description="模型配置")
 
 
 class SectionUpdate(BaseModel):
@@ -91,6 +94,7 @@ class GenerateDocRequest(BaseModel):
     """生成文档请求"""
     title: Optional[str] = Field(None, description="文档标题，默认使用大纲标题")
     config: Optional[dict] = Field(None, description="生成配置（可选，覆盖大纲保存的配置）")
+    ai_model_config: Optional[dict] = Field(None, description="模型配置（可选，指定各任务使用的AI模型）")
 
 
 class TaskResponse(BaseModel):
@@ -113,6 +117,9 @@ class TaskStatusResponse(BaseModel):
     completed_at: Optional[str] = None
     result: Optional[dict] = None
     error_message: Optional[str] = None
+    progress: int = 0  # 进度百分比 0-100
+    progress_detail: Optional[dict] = None  # 进度详情
+    models_used: Optional[list] = None  # 使用的模型列表
 
     class Config:
         from_attributes = True
@@ -150,9 +157,10 @@ def list_tasks(
             "created_at": format_datetime(task.created_at),
             "started_at": format_datetime(task.started_at),
             "completed_at": format_datetime(task.completed_at),
-            "completed_at": format_datetime(task.completed_at),
             "result": task.get_result(),
-            "error_message": task.error_message
+            "error_message": task.error_message,
+            "progress": task.progress or 0,
+            "progress_detail": task.get_progress_detail()
         }
         for task in tasks
     ]
@@ -185,6 +193,10 @@ def get_task_status(
             return None
         return dt.isoformat()
 
+    # 获取结果中的 models_used
+    result = task.get_result() or {}
+    models_used = result.get("models_used")
+    
     return {
         "task_id": task.id,
         "status": task.status,
@@ -192,8 +204,11 @@ def get_task_status(
         "created_at": format_datetime(task.created_at),
         "started_at": format_datetime(task.started_at),
         "completed_at": format_datetime(task.completed_at),
-        "result": task.get_result(),
-        "error_message": task.error_message
+        "result": result,
+        "error_message": task.error_message,
+        "progress": task.progress or 0,
+        "progress_detail": task.get_progress_detail(),
+        "models_used": models_used
     }
 
 
@@ -217,16 +232,22 @@ def generate_outline(
     """
     try:
         # 创建异步任务
+        task_params = {
+            "course": request.course,
+            "knowledge_point": request.knowledge_point,
+            "difficulty": request.difficulty,
+            "config": request.config  # 传递配置
+        }
+        
+        # 如果请求中包含模型配置，传递给任务
+        if request.ai_model_config:
+            task_params["model_config"] = request.ai_model_config
+        
         task = task_queue_service.create_task(
             db=db,
             user_id=current_user.id,
             task_type=TaskType.GENERATE_OUTLINE,
-            params={
-                "course": request.course,
-                "knowledge_point": request.knowledge_point,
-                "difficulty": request.difficulty,
-                "config": request.config  # 传递配置
-            }
+            params=task_params
         )
 
         return {
@@ -437,6 +458,12 @@ def generate_document(
         # 如果请求中包含配置，传递给任务
         if request and request.config:
             task_params["config"] = request.config
+        
+        # 如果请求中包含模型配置，传递给任务
+        if request and request.ai_model_config:
+            task_params["model_config"] = request.ai_model_config
+            import logging
+            logging.getLogger(__name__).info(f"[API] 接收到模型配置: {request.ai_model_config}")
 
         task = task_queue_service.create_task(
             db=db,

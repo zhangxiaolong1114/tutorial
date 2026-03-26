@@ -412,22 +412,24 @@ defineExpose({
 .generation-config-panel {
   background: white;
   border-radius: 12px;
-  padding: 24px;
+  padding: 20px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 .config-form {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   flex: 1;
   overflow-y: auto;
   padding-right: 8px;
   margin-right: -8px;
+  min-height: 0;
 }
 
 /* 自定义滚动条 */
@@ -457,23 +459,23 @@ defineExpose({
 }
 
 .panel-desc {
-  font-size: 0.875rem;
+  font-size: 0.8rem;
   color: #64748b;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 
 
 .form-section {
   border-top: 1px solid #e2e8f0;
-  padding-top: 16px;
+  padding-top: 12px;
 }
 
 .section-title {
-  font-size: 0.875rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #3b82f6;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -481,7 +483,7 @@ defineExpose({
 .form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 12px;
 }
 
 .form-group {

@@ -181,6 +181,7 @@ async function downloadFile(endpoint: string, filename: string): Promise<void> {
 }
 
 export { generationConfigApi } from './generationConfig'
+export { aiModelsApi } from './aiModels'
 
 export const api = {
   get: <T>(endpoint: string, options?: RequestOptions) => 

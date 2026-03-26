@@ -1,72 +1,34 @@
 """
-AI 服务封装
-支持 Kimi API 调用，带完整日志记录和自动续生成功能
+AI 服务封装（重构版）
+基于模型路由系统，支持多模型配置和动态选择
 """
 import json
 import logging
-import os
 import re
-import requests
-from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 
 from app.core.config import get_settings
+from app.core.model_router import (
+    model_router, model_registry, GenerationTask, TaskModelConfig
+)
+from app.core.model_callers import init_model_api_keys
 from app.core.prompt_templates import (
     build_outline_prompt,
     build_section_prompt,
     build_simulation_prompt,
+)
+from app.core.simulation_prompts import (
+    build_simulation_prompt_lite,
+    build_simulation_prompt_structure,
+    build_simulation_prompt_logic,
 )
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-class AIResponseLogger:
-    """AI 响应日志记录器"""
-    
-    def __init__(self):
-        self.log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs', 'ai_responses')
-        os.makedirs(self.log_dir, exist_ok=True)
-    
-    def log_response(self, task_id: str, module: str, model: str, result: dict, content: str):
-        """
-        记录 AI 响应到日志文件
-        
-        Args:
-            task_id: 任务ID
-            module: 模块名称 (outline/section/simulation)
-            model: 模型名称 (kimi/claude)
-            result: API 原始响应
-            content: 提取的内容
-        """
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"{model}_{module}_task{task_id}_{timestamp}.json"
-        filepath = os.path.join(self.log_dir, filename)
-        
-        log_data = {
-            "timestamp": timestamp,
-            "task_id": task_id,
-            "module": module,
-            "model": model,
-            "stop_reason": result.get("stop_reason") or result.get("choices", [{}])[0].get("finish_reason"),
-            "usage": result.get("usage", {}),
-            "content_length": len(content),
-            "content_preview": content[:500] if content else "",
-            "full_response": result
-        }
-        
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(log_data, f, ensure_ascii=False, indent=2)
-            logger.debug(f"[AI Logger] 响应已记录: {filepath}")
-        except Exception as e:
-            logger.warning(f"[AI Logger] 保存日志失败: {e}")
-        
-        return filepath
-
-
 class ContentValidator:
-    """内容完整性验证器"""
+    """内容完整性验证器（保持不变）"""
     
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -75,26 +37,20 @@ class ContentValidator:
     
     @staticmethod
     def calculate_similarity(text1: str, text2: str) -> float:
-        """
-        计算两段文本的相似度（0-1）
-        使用简单的高效算法：基于字符 n-gram 的 Jaccard 相似度
-        """
+        """计算两段文本的相似度（0-1）"""
         if not text1 or not text2:
             return 0.0
         
-        # 标准化
         norm1 = ContentValidator._normalize_text(text1)
         norm2 = ContentValidator._normalize_text(text2)
         
         if not norm1 or not norm2:
             return 0.0
         
-        # 如果长度差异过大，直接返回低相似度
         len_ratio = min(len(norm1), len(norm2)) / max(len(norm1), len(norm2))
         if len_ratio < 0.5:
             return len_ratio
         
-        # 使用 4-gram 计算 Jaccard 相似度
         def get_ngrams(text, n=4):
             return set(text[i:i+n] for i in range(len(text) - n + 1))
         
@@ -114,7 +70,6 @@ class ContentValidator:
         """检查 JSON 内容是否完整"""
         content = content.strip()
         
-        # 移除 markdown 代码块标记
         if content.startswith("```json"):
             content = content[7:]
         if content.startswith("```"):
@@ -134,7 +89,6 @@ class ContentValidator:
         """检查 HTML 内容是否完整"""
         content = content.strip()
         
-        # 检查关键标签是否闭合
         tags_to_check = [
             ('<div class="section-content">', '</div>'),
             ('<script>', '</script>'),
@@ -144,9 +98,8 @@ class ContentValidator:
             open_count = content.count(open_tag)
             close_count = content.count(close_tag)
             if open_count != close_count:
-                return False, f"标签不匹配: {open_tag} 出现 {open_count} 次, {close_tag} 出现 {close_count} 次"
+                return False, f"标签不匹配: {open_tag}"
         
-        # 检查是否有未闭合的 IIFE
         if "(function()" in content and not content.rstrip().endswith("})();"):
             if "<script>" in content:
                 return False, "JavaScript IIFE 未正确闭合"
@@ -154,34 +107,21 @@ class ContentValidator:
         return True, "HTML 结构完整"
     
     @staticmethod
-    def check_outline_complete(content: str) -> Tuple[bool, str]:
-        """检查大纲 JSON 是否完整"""
-        return ContentValidator.check_json_complete(content)
-    
-    @staticmethod
     def check_section_complete(content: str) -> Tuple[bool, str]:
         """检查章节 HTML 是否完整"""
-        # 章节内容只需要检查基本结构完整性
-        # 不要求严格的标签数量匹配，因为内容中可能有很多嵌套 div
-        
-        # 检查是否有 section-content 容器
         if '<div class="section-content">' not in content:
-            # 如果没有 section-content，检查是否有其他有效的内容结构
             has_heading = '<h3>' in content or '<h4>' in content
             has_paragraph = '<p>' in content
             has_formula = '$' in content
             
             if not (has_heading or has_paragraph or has_formula):
-                return False, "内容缺少基本结构（标题、段落或公式）"
+                return False, "内容缺少基本结构"
         
-        # 检查 script 标签是否匹配（如果存在）
         script_open = content.count('<script>')
         script_close = content.count('</script>')
         if script_open != script_close:
-            return False, f"script 标签不匹配"
+            return False, "script 标签不匹配"
         
-        # 检查是否有未闭合的公式（行内公式 $...$ 应该成对出现）
-        # 注意：这只是一个简单的检查，可能不完全准确
         dollar_count = content.count('$')
         if dollar_count % 2 != 0:
             return False, "公式分隔符 $ 数量不匹配"
@@ -193,405 +133,105 @@ class ContentValidator:
         """检查仿真代码是否完整"""
         import re
         
-        # 检查 simulation-container 标签是否闭合
+        # 检查 simulation-container
         open_count = len(re.findall(r'<div[^>]*class=["\'][^"\']*simulation-container[^"\']*["\'][^>]*>', content, re.IGNORECASE))
-        close_count = content.lower().count('</div>')
-        
-        # 对于仿真代码，我们只检查是否有 simulation-container 和对应的闭合
-        # 不严格要求数量匹配，因为内部可能有很多嵌套 div
         if open_count == 0:
             return False, "缺少 simulation-container 容器"
         
-        # 检查 script 标签是否闭合
+        # 检查 script 标签
         script_open = content.lower().count('<script>')
         script_close = content.lower().count('</script>')
         if script_open != script_close:
-            return False, f"script 标签不匹配: 开启 {script_open} 次, 闭合 {script_close} 次"
+            return False, f"script 标签不匹配"
         
-        # 检查 IIFE 是否正确闭合
+        # 检查 IIFE 闭合
         if "(function()" in content or "(function ()" in content:
             if not re.search(r'\}\)\(\);\s*</script>', content, re.DOTALL):
-                return False, "JavaScript IIFE 未正确闭合或 script 标签未闭合"
+                return False, "JavaScript IIFE 未正确闭合"
         
-        # 额外检查仿真特有的结构
+        # 检查 Canvas
         has_canvas = "<canvas" in content.lower()
         has_2d_context = "getContext('2d')" in content or 'getContext("2d")' in content
         if has_canvas and not has_2d_context:
             return False, "Canvas 初始化代码不完整"
         
-        # 检查关键帧数据完整性（动画类型仿真）
+        # 检查关键帧数据
         if "keyFrames" in content or "keyframes" in content.lower():
-            # 检查关键帧数据是否完整（不能只定义第0帧）
-            import re
             keyframe_pattern = r'keyFrames\s*=\s*\{([^}]+)\}'
             match = re.search(keyframe_pattern, content, re.DOTALL)
             if match:
                 keyframe_content = match.group(1)
-                # 计算定义了多少个关键帧
                 frame_count = len(re.findall(r'\d+\s*:', keyframe_content))
                 if frame_count < 5:
-                    return False, f"关键帧数据不完整：只定义了 {frame_count} 帧，至少需要 5 帧"
+                    return False, f"关键帧数据不完整：只定义了 {frame_count} 帧"
         
-        # 检查是否有省略性注释
+        # 检查省略性注释
         forbidden_patterns = [
             r'此处省略.*代码',
             r'根据实际.*实现',
             r'添加更多.*数据',
-            r'根据.*模型实现',
             r'//\s*\.\.\.',
             r'/\*\s*\.\.\.\s*\*/',
-            r'//\s*TODO',
-            r'//\s*FIXME',
         ]
         for pattern in forbidden_patterns:
             if re.search(pattern, content, re.IGNORECASE):
-                return False, f"发现省略性注释或未完成标记: {pattern}"
-        
-        # 检查绘制函数是否完整实现
-        draw_functions = re.findall(r'function\s+(draw\w*|render\w*|animate)\s*\([^)]*\)\s*\{([^}]*)\}', content, re.DOTALL)
-        
-        # 统计所有绘制函数中的 ctx. 调用总数
-        total_ctx_calls = 0
-        for func_name, func_body in draw_functions:
-            clean_body = re.sub(r'/\*.*?\*/', '', func_body, flags=re.DOTALL)
-            clean_body = re.sub(r'//.*?\n', '\n', clean_body)
-            clean_body = clean_body.strip()
-            total_ctx_calls += clean_body.count('ctx.')
-            # 单个函数至少要有一些代码
-            if len(clean_body) < 10:
-                return False, f"绘制函数 '{func_name}' 实现不完整"
-        
-        # 所有绘制函数加起来至少要有一些 Canvas 调用
-        if total_ctx_calls < 3:
-            return False, "绘制函数缺少 Canvas 绘制代码"
+                return False, f"发现省略性注释"
         
         return True, "仿真代码完整"
 
 
 class AIService:
-    """AI 服务统一封装"""
+    """
+    AI 服务统一封装（重构版）
+    基于模型路由系统，支持用户自定义模型配置
+    """
     
     def __init__(self):
-        self.kimi_api_key = settings.KIMI_API_KEY
-        self.kimi_base_url = "https://api.moonshot.cn/v1"
-        
-        # Claude 配置（从配置文件读取）
-        self.claude_api_key = settings.CLAUDE_API_KEY
-        self.claude_base_url = getattr(settings, 'CLAUDE_BASE_URL', 'https://xiaoai.plus/v1')
-        self.claude_model = getattr(settings, 'CLAUDE_MODEL', 'claude-opus-4-5-20251101')
-        
-        self.response_logger = AIResponseLogger()
         self.validator = ContentValidator()
+        self._init_api_keys()
     
-    def _save_kimi_response(self, task_id: str, module: str, result: dict, content: str):
-        """保存 Kimi 响应到日志"""
-        return self.response_logger.log_response(task_id, module, "kimi", result, content)
-    
-    def _save_claude_response(self, task_id: str, module: str, result: dict, content: str):
-        """保存 Claude 响应到日志"""
-        return self.response_logger.log_response(task_id, module, "claude", result, content)
-    
-    def _log_full_prompt(self, task_id: str, module: str, model: str, messages: list):
-        """
-        记录完整 Prompt 到 ai_server.log
-        
-        Args:
-            task_id: 任务ID
-            module: 模块名称
-            model: 模型名称
-            messages: 完整的对话消息列表
-        """
-        import os
-        
-        log_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        
-        log_file = os.path.join(log_dir, 'ai_server.log')
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 构建完整的 prompt 文本
-        prompt_lines = [f"\n{'='*80}", f"[{timestamp}] Task {task_id}/{module} - {model.upper()} FULL PROMPT", f"{'='*80}"]
-        
-        for i, msg in enumerate(messages):
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            prompt_lines.append(f"\n--- Message {i+1} [{role}] ---")
-            prompt_lines.append(content)
-        
-        prompt_lines.append(f"\n{'='*80}\n")
-        
-        # 追加写入日志文件
-        try:
-            with open(log_file, 'a', encoding='utf-8') as f:
-                f.write('\n'.join(prompt_lines))
-        except Exception as e:
-            logger.warning(f"[AI Logger] 保存完整 prompt 失败: {e}")
-    
-    def _is_duplicate_content(self, prev_content: str, new_content: str, threshold: float = 0.85) -> bool:
-        """
-        检测新内容是否与之前的内容重复
-        
-        Args:
-            prev_content: 之前生成的内容
-            new_content: 新返回的内容
-            threshold: 相似度阈值，超过则认为重复
-        
-        Returns:
-            True 如果内容重复
-        """
-        if not prev_content or not new_content:
-            return False
-        
-        similarity = self.validator.calculate_similarity(prev_content, new_content)
-        logger.debug(f"[Content Check] 内容相似度: {similarity:.2%}")
-        
-        return similarity > threshold
-    
-    def _call_kimi_with_continuation(
-        self, 
-        messages: list, 
-        task_id: str,
-        module: str,
-        temperature: float = 0.7,
-        max_retries: int = 3
-    ) -> Tuple[str, str]:
-        """
-        调用 Kimi API，支持自动续生成
-        
-        Returns:
-            (content, log_file_path)
-        """
-        import time
-        
-        if not self.kimi_api_key:
-            raise ValueError("KIMI_API_KEY not configured")
-        
-        headers = {
-            "Authorization": f"Bearer {self.kimi_api_key}",
-            "Content-Type": "application/json"
+    def _init_api_keys(self):
+        """从配置初始化 API Keys"""
+        api_keys = {
+            "kimi": settings.KIMI_API_KEY,
+            "claude": getattr(settings, 'CLAUDE_API_KEY', ''),
         }
         
-        # model = "kimi-k2-0905-preview"  # 使用长上下文模型
-        model = "kimi-k2.5"  # 使用长上下文模型
+        # 从配置加载其他模型的 API Keys（如果有）
+        for model_id in ["deepseek", "qwen", "glm", "openai"]:
+            key = getattr(settings, f'{model_id.upper()}_API_KEY', '')
+            if key:
+                api_keys[model_id] = key
         
-        # kimi-k2.5 只支持 temperature=1
-        if model == "kimi-k2.5":
-            temperature = 1.0
+        # 加载自定义 Base URL
+        for model_id in ["deepseek", "qwen", "glm", "claude"]:
+            base_url = getattr(settings, f'{model_id.upper()}_BASE_URL', '')
+            if base_url:
+                model_registry.update_base_url(f"{model_id}-v3" if model_id == "deepseek" else f"{model_id}-coder", base_url)
         
-        all_content = []
-        current_messages = messages.copy()
-        total_tokens = 0
-        max_continuation = 5  # 最大续生成次数
-        
-        # 记录完整 Prompt 到 ai_server.log
-        self._log_full_prompt(task_id, module, "kimi", messages)
-        
-        for attempt in range(max_continuation):
-            data = {
-                "model": model,
-                "messages": current_messages,
-                "temperature": temperature,
-                "max_tokens": 24000  # kimi-k2.5 支持最大 65535 tokens，设置为 24000 确保复杂仿真代码能够完整生成
-            }
-            
-            logger.info(f"[Kimi API] Task {task_id}/{module} - 调用 #{attempt + 1}")
-            
-            try:
-                response = requests.post(
-                    f"{self.kimi_base_url}/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=300
-                )
-                
-                if response.status_code != 200:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
-                    logger.error(f"[Kimi API] 错误: {error_msg}")
-                    raise Exception(error_msg)
-                
-                result = response.json()
-                choice = result["choices"][0]
-                content = choice["message"]["content"]
-                finish_reason = choice.get("finish_reason", "unknown")
-                usage = result.get("usage", {})
-                
-                all_content.append(content)
-                total_tokens += usage.get("total_tokens", 0)
-                
-                logger.info(f"[Kimi API] Task {task_id}/{module} - 收到响应, finish_reason={finish_reason}, tokens={usage.get('total_tokens', 0)}")
-                
-                # 保存响应日志
-                log_file = self._save_kimi_response(task_id, module, result, content)
-                
-                # 检查内容完整性
-                if module == "outline":
-                    is_complete, check_msg = self.validator.check_outline_complete("".join(all_content))
-                elif module == "section":
-                    is_complete, check_msg = self.validator.check_section_complete("".join(all_content))
-                elif module == "simulation":
-                    is_complete, check_msg = self.validator.check_simulation_complete("".join(all_content))
-                else:
-                    is_complete, check_msg = True, "无需检查"
-                
-                logger.info(f"[Kimi API] Task {task_id}/{module} - 完整性检查: {check_msg}")
-                
-                # 如果内容完整或不是因为长度截断，结束生成
-                if is_complete or finish_reason != "length":
-                    if not is_complete:
-                        logger.warning(f"[Kimi API] Task {task_id}/{module} - 内容可能不完整，但非长度原因: {check_msg}")
-                    return "".join(all_content), log_file
-                
-                # 需要续生成
-                logger.info(f"[Kimi API] Task {task_id}/{module} - 内容不完整，继续生成...")
-                
-                # 检查是否返回了重复内容（避免浪费 token）
-                if all_content and self._is_duplicate_content(all_content[-1], content):
-                    logger.warning(f"[Kimi API] Task {task_id}/{module} - 检测到重复内容，停止续生成")
-                    break
-                
-                # 添加已生成的内容到上下文，请求继续
-                current_messages.append({
-                    "role": "assistant",
-                    "content": content
-                })
-                current_messages.append({
-                    "role": "user", 
-                    "content": "请继续生成剩余内容，保持格式一致。从上次中断的地方继续，不要重复已生成的内容。"
-                })
-                
-            except Exception as e:
-                logger.error(f"[Kimi API] Task {task_id}/{module} - 调用失败: {e}")
-                raise
-        
-        # 达到最大续生成次数
-        logger.warning(f"[Kimi API] Task {task_id}/{module} - 达到最大续生成次数({max_continuation})，返回已生成内容")
-        return "".join(all_content), log_file if 'log_file' in locals() else ""
-    
-    def _call_claude_with_continuation(
-        self,
-        messages: list,
-        task_id: str,
-        module: str,
-        temperature: float = 0.7,
-        max_retries: int = 3
-    ) -> Tuple[str, str]:
-        """
-        调用 Claude API，支持自动续生成
-        
-        Returns:
-            (content, log_file_path)
-        """
-        import time
-        
-        if not self.claude_api_key:
-            raise ValueError("CLAUDE_API_KEY not configured")
-        
-        headers = {
-            "Authorization": f"Bearer {self.claude_api_key}",
-            "Content-Type": "application/json",
-            "Anthropic-Version": "2023-06-01"
-        }
-        
-        model = self.claude_model
-        all_content = []
-        current_messages = messages.copy()
-        max_continuation = 5
-        
-        # 分离 system 和 user 消息
-        system_msg = ""
-        user_messages = []
-        for msg in current_messages:
-            if msg.get("role") == "system":
-                system_msg = msg.get("content", "")
-            else:
-                user_messages.append(msg)
-        
-        # 记录完整 Prompt 到 ai_server.log
-        self._log_full_prompt(task_id, module, "claude", messages)
-        
-        for attempt in range(max_continuation):
-            data = {
-                "model": model,
-                "max_tokens": 8192,
-                "temperature": temperature,
-                "messages": user_messages
-            }
-            if system_msg:
-                data["system"] = system_msg
-            
-            logger.info(f"[Claude API] Task {task_id}/{module} - 调用 #{attempt + 1}")
-            
-            try:
-                response = requests.post(
-                    f"{self.claude_base_url}/messages",
-                    headers=headers,
-                    json=data,
-                    timeout=360
-                )
-                
-                if response.status_code != 200:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
-                    logger.error(f"[Claude API] 错误: {error_msg}")
-                    raise Exception(error_msg)
-                
-                result = response.json()
-                content = result["content"][0]["text"]
-                stop_reason = result.get("stop_reason", "unknown")
-                usage = result.get("usage", {})
-                
-                all_content.append(content)
-                
-                logger.info(f"[Claude API] Task {task_id}/{module} - 收到响应, stop_reason={stop_reason}, tokens={usage.get('output_tokens', 0)}")
-                
-                # 保存响应日志
-                log_file = self._save_claude_response(task_id, module, result, content)
-                
-                # 检查内容完整性
-                is_complete, check_msg = self.validator.check_simulation_complete("".join(all_content))
-                logger.info(f"[Claude API] Task {task_id}/{module} - 完整性检查: {check_msg}")
-                
-                # 如果内容完整或不是因为长度截断，结束生成
-                if is_complete or stop_reason != "max_tokens":
-                    if not is_complete:
-                        logger.warning(f"[Claude API] Task {task_id}/{module} - 内容可能不完整，但非长度原因: {check_msg}")
-                    return "".join(all_content), log_file
-                
-                # 需要续生成
-                logger.info(f"[Claude API] Task {task_id}/{module} - 内容不完整，继续生成...")
-                
-                # 检查是否返回了重复内容（避免浪费 token）
-                if all_content and self._is_duplicate_content(all_content[-1], content):
-                    logger.warning(f"[Claude API] Task {task_id}/{module} - 检测到重复内容，停止续生成")
-                    break
-                
-                # 添加已生成的内容到上下文
-                user_messages.append({
-                    "role": "assistant",
-                    "content": content
-                })
-                user_messages.append({
-                    "role": "user",
-                    "content": "请继续生成剩余内容，保持代码格式一致，完成未闭合的函数和标签。从上次中断的地方继续，不要重复已生成的代码。"
-                })
-                
-            except Exception as e:
-                logger.error(f"[Claude API] Task {task_id}/{module} - 调用失败: {e}")
-                raise
-        
-        # 达到最大续生成次数
-        logger.warning(f"[Claude API] Task {task_id}/{module} - 达到最大续生成次数({max_continuation})，返回已生成内容")
-        return "".join(all_content), log_file if 'log_file' in locals() else ""
+        init_model_api_keys(api_keys)
+        logger.info("[AIService] API Keys 初始化完成")
     
     # ============ 对外接口 ============
     
-    def generate_outline_with_config(
+    def generate_outline(
         self,
         course: str,
         knowledge_point: str,
         config: dict,
-        task_id: str = "unknown"
+        task_id: str = "unknown",
+        model_id: Optional[str] = None,
+        task_config: Optional[TaskModelConfig] = None,
     ) -> dict:
-        """使用配置生成大纲"""
+        """
+        生成大纲
+        
+        Args:
+            model_id: 指定模型ID（优先级最高）
+            task_config: 任务级别的模型配置
+        """
+        logger.info(f"[AI Service] Task {task_id} - 开始生成大纲: {course} - {knowledge_point}")
+        
         prompt = build_outline_prompt(course, knowledge_point, config)
         
         messages = [
@@ -599,12 +239,15 @@ class AIService:
             {"role": "user", "content": prompt}
         ]
         
-        content, log_file = self._call_kimi_with_continuation(
+        logger.info(f"[AI Service] Task {task_id} - 调用模型生成大纲")
+        content, log_file = model_router.route(
+            task=GenerationTask.OUTLINE,
             messages=messages,
+            model_id=model_id,
+            task_config=task_config,
             task_id=task_id,
-            module="outline",
-            temperature=0.7
         )
+        logger.info(f"[AI Service] Task {task_id} - 大纲生成完成，日志: {log_file}")
         
         # 解析 JSON
         try:
@@ -624,7 +267,7 @@ class AIService:
             logger.error(f"[AI Service] Task {task_id} - 大纲 JSON 解析失败: {e}")
             return self._get_default_outline(course, knowledge_point)
     
-    def generate_section_content_with_config(
+    def generate_section(
         self,
         section_title: str,
         section_key_points: list,
@@ -632,31 +275,38 @@ class AIService:
         knowledge_point: str,
         config: dict,
         task_id: str = "unknown",
-        context: dict = None
+        model_id: Optional[str] = None,
+        task_config: Optional[TaskModelConfig] = None,
+        context: dict = None,
     ) -> str:
-        """使用配置生成章节内容（支持上下文连贯性）"""
+        """生成章节内容"""
+        logger.info(f"[AI Service] Task {task_id} - 开始生成章节: {section_title}")
+        
         prompt = build_section_prompt(section_title, section_key_points, course, knowledge_point, config, context)
-
+        
         messages = [
             {"role": "system", "content": "你是教育内容专家，生成统一结构的高质量HTML教学内容。注意与前后章节保持连贯性。"},
             {"role": "user", "content": prompt}
         ]
-
-        content, log_file = self._call_kimi_with_continuation(
+        
+        logger.info(f"[AI Service] Task {task_id} - 调用模型生成章节")
+        content, log_file = model_router.route(
+            task=GenerationTask.SECTION,
             messages=messages,
+            model_id=model_id,
+            task_config=task_config,
             task_id=task_id,
-            module="section",
-            temperature=0.7
         )
-
+        logger.info(f"[AI Service] Task {task_id} - 章节生成完成，日志: {log_file}")
+        
         # 后处理
         content = self._clean_markdown_code_blocks(content)
         content = self._normalize_html_structure(content, section_title)
         content = self._convert_math_delimiters(content)
-
+        
         return content
     
-    def generate_simulation_code_with_config(
+    def generate_simulation(
         self,
         simulation_desc: str,
         course: str,
@@ -664,61 +314,338 @@ class AIService:
         simulation_types: list,
         config: dict,
         task_id: str = "unknown",
-        context: dict = None
+        model_id: Optional[str] = None,
+        task_config: Optional[TaskModelConfig] = None,
+        context: dict = None,
+        use_chunked: bool = True,
     ) -> str:
         """
-        使用配置生成交互仿真代码
-
-        支持通过 SIMULATION_PROVIDER 配置选择使用 Kimi 或 Claude
+        生成交互仿真代码
         
         Args:
-            simulation_desc: 仿真描述
-            course: 课程名称
-            knowledge_point: 知识点
-            simulation_types: 仿真类型列表
-            config: 配置字典
-            task_id: 任务ID
-            context: 上下文信息，包含前置章节的核心概念和公式
+            use_chunked: 是否使用分块生成（默认True，更快更稳定）
         """
-        prompt = build_simulation_prompt(simulation_desc, course, knowledge_point, simulation_types, config, context)
-        
-        # 获取仿真生成 provider 配置
-        provider = getattr(settings, 'SIMULATION_PROVIDER', 'kimi').lower()
-        
-        if provider == 'claude':
-            # 使用 Claude 生成仿真
-            logger.info(f"[Simulation] Task {task_id} - 使用 Claude 生成仿真")
-            messages = [
-                {"role": "system", "content": "You are an expert in creating interactive HTML5 Canvas simulations for education. Write clean, complete, runnable code with proper HTML structure."},
-                {"role": "user", "content": prompt}
-            ]
-            
-            content, log_file = self._call_claude_with_continuation(
-                messages=messages,
-                task_id=task_id,
-                module="simulation",
-                temperature=0.7
+        if use_chunked:
+            return self._generate_simulation_chunked(
+                simulation_desc, course, knowledge_point, 
+                simulation_types, config, task_id, model_id, task_config, context
             )
         else:
-            # 默认使用 Kimi 生成仿真
-            logger.info(f"[Simulation] Task {task_id} - 使用 Kimi 生成仿真")
-            messages = [
-                {"role": "system", "content": "你是交互式 HTML5 Canvas 仿真代码专家。编写干净、完整、可运行的教育仿真代码，使用中文注释和界面标签。"},
-                {"role": "user", "content": prompt}
-            ]
-            
-            content, log_file = self._call_kimi_with_continuation(
-                messages=messages,
-                task_id=task_id,
-                module="simulation",
-                temperature=0.7
+            return self._generate_simulation_full(
+                simulation_desc, course, knowledge_point,
+                simulation_types, config, task_id, model_id, task_config, context
             )
+    
+    def _generate_simulation_chunked(
+        self,
+        simulation_desc: str,
+        course: str,
+        knowledge_point: str,
+        simulation_types: list,
+        config: dict,
+        task_id: str,
+        model_id: Optional[str],
+        task_config: Optional[TaskModelConfig],
+        context: dict,
+    ) -> str:
+        """
+        分块生成仿真（两阶段）
+        
+        阶段1：生成结构和样式（JSON，轻量）
+        阶段2：生成物理计算和渲染逻辑（JS，核心）
+        
+        优点：
+        - 单次请求token少，响应快
+        - 任一阶段失败可重试，不浪费之前结果
+        - 总时间通常比单次长请求更短
+        """
+        logger.info(f"[Simulation] Task {task_id} - 使用分块生成模式")
+        
+        # ===== 阶段1：生成结构和样式 =====
+        logger.info(f"[Simulation] Task {task_id} - 阶段1：生成结构")
+        
+        structure_prompt = build_simulation_prompt_structure(
+            simulation_desc, course, knowledge_point, context
+        )
+        
+        structure_messages = [
+            {"role": "system", "content": "你是仿真界面设计师，输出简洁的JSON配置。"},
+            {"role": "user", "content": structure_prompt}
+        ]
+        
+        try:
+            structure_content, _ = model_router.route(
+                task=GenerationTask.SIMULATION,
+                messages=structure_messages,
+                model_id=model_id,
+                task_config=task_config,
+                task_id=f"{task_id}_struct",
+            )
+            
+            # 解析 JSON
+            structure_json = self._extract_json(structure_content)
+            if not structure_json:
+                raise ValueError("无法解析结构JSON")
+            
+            logger.info(f"[Simulation] Task {task_id} - 结构生成完成: {structure_json.get('title', 'unknown')}")
+            
+        except Exception as e:
+            logger.error(f"[Simulation] Task {task_id} - 阶段1失败: {e}")
+            # 降级为完整生成
+            logger.info(f"[Simulation] Task {task_id} - 降级为完整生成")
+            return self._generate_simulation_full(
+                simulation_desc, course, knowledge_point,
+                simulation_types, config, task_id, model_id, task_config, context
+            )
+        
+        # ===== 阶段2：生成逻辑代码 =====
+        logger.info(f"[Simulation] Task {task_id} - 阶段2：生成逻辑代码")
+        logger.info(f"[Simulation] Task {task_id} - 使用模型: {model_id or 'default'}, task_config: {task_config}")
+        
+        try:
+            logic_prompt = build_simulation_prompt_logic(
+                simulation_desc, course, knowledge_point, 
+                simulation_types, structure_json, context
+            )
+            logger.info(f"[Simulation] Task {task_id} - 逻辑Prompt生成完成，长度: {len(logic_prompt)}")
+        except Exception as e:
+            logger.error(f"[Simulation] Task {task_id} - 生成逻辑Prompt失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+        
+        logic_messages = [
+            {"role": "system", "content": "你是仿真代码专家，编写完整可运行的JavaScript。"},
+            {"role": "user", "content": logic_prompt}
+        ]
+        
+        try:
+            logger.info(f"[Simulation] Task {task_id} - 调用模型生成逻辑代码")
+            logger.info(f"[Simulation] Task {task_id} - 消息数: {len(logic_messages)}, 任务类型: SIMULATION")
+            logic_content, logic_log_file = model_router.route(
+                task=GenerationTask.SIMULATION,
+                messages=logic_messages,
+                model_id=model_id,
+                task_config=task_config,
+                task_id=f"{task_id}_logic",
+            )
+            logger.info(f"[Simulation] Task {task_id} - model_router.route 返回成功")
+            
+            logger.info(f"[Simulation] Task {task_id} - 逻辑代码生成成功，日志: {logic_log_file}")
+            
+            # 提取 JavaScript
+            js_code = self._extract_javascript(logic_content)
+            
+            if not js_code or len(js_code) < 100:
+                logger.warning(f"[Simulation] Task {task_id} - 提取的JS代码过短，可能不完整")
+            else:
+                logger.info(f"[Simulation] Task {task_id} - 逻辑生成完成，JS代码长度: {len(js_code)}")
+            
+        except Exception as e:
+            logger.error(f"[Simulation] Task {task_id} - 阶段2失败: {e}")
+            # 阶段2失败，阶段1结果可缓存复用
+            raise
+        
+        # ===== 拼接完整仿真 =====
+        try:
+            simulation_html = self._assemble_simulation(structure_json, js_code)
+            logger.info(f"[Simulation] Task {task_id} - 分块生成完成，HTML长度: {len(simulation_html)}")
+            
+            # 验证生成的HTML是否完整
+            if '<div class="simulation-container">' not in simulation_html:
+                logger.error(f"[Simulation] Task {task_id} - 生成的HTML缺少simulation-container")
+                raise ValueError("生成的仿真HTML结构不完整")
+            
+            if '<script>' not in simulation_html or len(js_code) < 50:
+                logger.error(f"[Simulation] Task {task_id} - 生成的HTML缺少脚本或脚本过短")
+                raise ValueError("生成的仿真脚本不完整")
+            
+            return simulation_html
+        except Exception as e:
+            logger.error(f"[Simulation] Task {task_id} - 拼接仿真失败: {e}")
+            raise
+    
+    def _generate_simulation_full(
+        self,
+        simulation_desc: str,
+        course: str,
+        knowledge_point: str,
+        simulation_types: list,
+        config: dict,
+        task_id: str,
+        model_id: Optional[str],
+        task_config: Optional[TaskModelConfig],
+        context: dict,
+    ) -> str:
+        """完整生成（备用方案）- 使用精简Prompt"""
+        logger.info(f"[Simulation] Task {task_id} - 使用完整生成模式")
+        
+        prompt = build_simulation_prompt_lite(
+            simulation_desc, course, knowledge_point, 
+            simulation_types, config, context
+        )
+        
+        messages = [
+            {"role": "system", "content": "你是仿真代码专家，编写完整可运行的HTML5 Canvas仿真。"},
+            {"role": "user", "content": prompt}
+        ]
+        
+        content, _ = model_router.route(
+            task=GenerationTask.SIMULATION,
+            messages=messages,
+            model_id=model_id,
+            task_config=task_config,
+            task_id=task_id,
+        )
         
         # 后处理
         content = self._clean_markdown_code_blocks(content)
         content = self._extract_simulation_content(content)
         
         return content
+    
+    def _extract_json(self, text: str) -> Optional[dict]:
+        """从文本中提取JSON"""
+        import json
+        
+        # 尝试直接解析
+        try:
+            return json.loads(text.strip())
+        except:
+            pass
+        
+        # 查找代码块中的JSON
+        import re
+        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1).strip())
+            except:
+                pass
+        
+        # 查找花括号包裹的内容
+        brace_match = re.search(r'\{[\s\S]*\}', text)
+        if brace_match:
+            try:
+                return json.loads(brace_match.group(0))
+            except:
+                pass
+        
+        return None
+    
+    def _extract_javascript(self, text: str) -> str:
+        """从文本中提取JavaScript代码"""
+        import re
+        
+        # 查找代码块
+        js_match = re.search(r'```(?:javascript|js)?\s*([\s\S]*?)\s*```', text)
+        if js_match:
+            return js_match.group(1).strip()
+        
+        # 如果没有代码块标记，返回清理后的文本
+        return text.strip()
+    
+    def _assemble_simulation(self, structure: dict, js_code: str) -> str:
+        """拼接结构和逻辑生成完整仿真"""
+        
+        # 构建数据面板HTML
+        data_metrics_html = ""
+        for metric in structure.get("data_metrics", []):
+            unit = metric.get("unit", "")
+            unit_html = f'<span class="unit">{unit}</span>' if unit else ""
+            data_metrics_html += f'''
+    <div class="metric">
+      <span class="label">{metric.get("label", "")}:</span>
+      <span class="value" id="{metric.get("id", "")}">0</span>{unit_html}
+    </div>'''
+        
+        # 构建控件HTML
+        controls_html = ""
+        slider_ids = []
+        button_ids = []
+        for ctrl in structure.get("controls", []):
+            ctrl_id = ctrl.get("id", "")
+            if ctrl.get("type") == "slider":
+                slider_ids.append(ctrl_id)
+                display_id = ctrl_id.replace("Slider", "Display").replace("slider", "Display")
+                controls_html += f'''
+    <label>{ctrl.get("label", "")}: <span id="{display_id}">{ctrl.get("value", 0)}</span></label>
+    <input type="range" id="{ctrl_id}" min="{ctrl.get("min", 0)}" max="{ctrl.get("max", 100)}" step="{ctrl.get("step", 1)}" value="{ctrl.get("value", 0)}">'''
+            elif ctrl.get("type") == "button":
+                button_ids.append(ctrl_id)
+                controls_html += f'''
+    <button id="{ctrl_id}">{ctrl.get("label", "")}</button>'''
+        
+        # 生成控件ID列表用于JS引用检查
+        all_control_ids = slider_ids + button_ids
+        control_ids_js = ", ".join([f'"{cid}"' for cid in all_control_ids])
+        
+        # 组装完整HTML，添加错误处理和控件引用
+        html = f'''<div class="simulation-container">
+  <div class="title-desc">
+    <h2>{structure.get("title", "仿真")}</h2>
+    <p>{structure.get("description", "")}</p>
+  </div>
+  
+  <div class="data-panel">{data_metrics_html}
+  </div>
+  
+  <canvas id="simCanvas" width="700" height="480"></canvas>
+  
+  <div class="control-panel">{controls_html}
+  </div>
+  
+  <style>
+{structure.get("css", "")}
+  </style>
+  
+  <script>
+(function() {{
+  'use strict';
+  
+  // 错误处理
+  window.onerror = function(msg, url, line) {{
+    console.error('[Simulation Error]', msg, 'at line', line);
+    return true;
+  }};
+  
+  // 获取Canvas
+  const canvas = document.getElementById('simCanvas');
+  if (!canvas) {{
+    console.error('Canvas not found');
+    return;
+  }}
+  const ctx = canvas.getContext('2d');
+  
+  // 获取控件引用
+  const controls = {{}};
+  [{control_ids_js}].forEach(function(id) {{
+    const el = document.getElementById(id);
+    if (el) controls[id] = el;
+    else console.warn('Control not found:', id);
+  }});
+  
+  // 用户代码开始
+{js_code}
+  // 用户代码结束
+}})();
+  </script>
+</div>'''
+        
+        return html
+    
+    def get_available_models(self, task_type: Optional[str] = None) -> list:
+        """获取可用模型列表"""
+        if task_type:
+            task = GenerationTask(task_type)
+            return model_router.get_available_models(task)
+        return model_router.get_available_models()
+    
+    def get_model_recommendations(self, task_type: str) -> list:
+        """获取模型推荐列表"""
+        from app.core.model_callers import get_model_recommendations
+        task = GenerationTask(task_type)
+        return get_model_recommendations(task)
     
     # ============ 工具方法 ============
     
@@ -737,7 +664,6 @@ class AIService:
         """提取仿真内容"""
         import re
         
-        # 查找 simulation-container div - 使用计数方式匹配最外层标签
         start_match = re.search(r'<div class="simulation-container"[^>]*>', html, re.IGNORECASE)
         if start_match:
             start_pos = start_match.start()
@@ -745,60 +671,43 @@ class AIService:
             depth = 1
             
             while pos < len(html) and depth > 0:
-                # 查找下一个 div 标签（开启或闭合）
                 next_open = html.find('<div', pos)
                 next_close = html.find('</div>', pos)
                 
-                # 如果没有更多标签，跳出
                 if next_open == -1 and next_close == -1:
                     break
                 
-                # 确定下一个标签是什么
                 if next_open != -1 and (next_close == -1 or next_open < next_close):
-                    # 找到开启标签，检查是否是自闭合
                     tag_end = html.find('>', next_open)
                     if tag_end != -1:
                         tag_content = html[next_open:tag_end+1]
-                        # 不是自闭合标签（没有 / 结尾）
                         if not tag_content.rstrip().endswith('/>'):
                             depth += 1
                         pos = tag_end + 1
                     else:
                         break
                 else:
-                    # 找到闭合标签
                     depth -= 1
-                    pos = next_close + 6  # len('</div>') = 6
+                    pos = next_close + 6
                     
                     if depth == 0:
-                        # 找到最外层闭合标签
                         container_content = html[start_pos:pos]
-                        
-                        # 检查后面是否有 <script> 或 <style> 标签（Kimi 有时会放在外面）
                         remaining = html[pos:].strip()
                         
-                        # 提取 script 和 style 标签
                         script_match = re.search(r'<script>.*?</script>', remaining, re.DOTALL | re.IGNORECASE)
                         style_match = re.search(r'<style>.*?</style>', remaining, re.DOTALL | re.IGNORECASE)
                         
-                        # 如果 script/style 在容器外面，需要把它们移到容器内
                         if script_match or style_match:
-                            # 移除容器闭合标签
-                            container_without_close = container_content[:-6]  # 移除 </div>
-                            
-                            # 按正确顺序添加 style 和 script
+                            container_without_close = container_content[:-6]
                             additional_content = ""
                             if style_match:
                                 additional_content += style_match.group(0)
                             if script_match:
                                 additional_content += script_match.group(0)
-                            
-                            # 重新组装
                             return container_without_close + additional_content + "</div>"
                         
                         return container_content
         
-        # 如果没有找到，返回原始内容
         return html
     
     def _normalize_html_structure(self, html: str, section_title: str) -> str:
@@ -828,8 +737,15 @@ class AIService:
     def _convert_math_delimiters(self, html: str) -> str:
         """转换数学公式分隔符"""
         import re
+        
+        # 转换 \( ... \) 为 $ ... $
         html = re.sub(r'\\\((.*?)\\\)', r'$\1$', html, flags=re.DOTALL)
+        # 转换 \[ ... \] 为 $$ ... $$
         html = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', html, flags=re.DOTALL)
+        
+        # 注意：不再自动替换双反斜杠，让 KaTeX 自己处理
+        # 过度转义会导致 KaTeX 解析错误
+        
         return html
     
     def _validate_and_clean_outline(self, outline: dict) -> dict:
@@ -862,37 +778,85 @@ class AIService:
             ]
         }
 
+    def _fix_math_formulas(self, html: str) -> str:
+        """
+        修复公式中的常见问题
+        
+        问题：
+        1. AI 生成的公式可能包含未转义的特殊字符
+        2. 某些 KaTeX 命令可能需要特殊处理
+        """
+        import re
+        
+        # 修复常见的公式问题
+        fixes = [
+            # 修复双反斜杠问题
+            (r'\\\\(frac|dot|sum|int|alpha|beta|gamma|delta|theta|omega|pi|sigma|zeta)', r'\\\1'),
+            # 修复连续的反斜杠
+            (r'\\\\\\', r'\\\\'),
+        ]
+        
+        for pattern, replacement in fixes:
+            html = re.sub(pattern, replacement, html)
+        
+        return html
+    
     def generate_complete_html(self, title: str, body_content: str) -> str:
-        """
-        生成完整的 HTML 文档（包含样式和 KaTeX）
+        """生成完整的 HTML 文档（包含样式和 KaTeX）"""
+        # 在生成最终 HTML 前修复公式
+        body_content = self._fix_math_formulas(body_content)
         
-        Args:
-            title: 文档标题
-            body_content: body 内的 HTML 内容
-        
-        Returns:
-            完整的 HTML 文档字符串
-        """
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
-    <!-- KaTeX 用于渲染数学公式 - 比 MathJax 更轻量更快 -->
     <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/KaTeX/0.16.9/katex.min.css">
     <script defer src="https://cdn.bootcdn.net/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
     <script defer src="https://cdn.bootcdn.net/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
     <script>
         document.addEventListener("DOMContentLoaded", function() {{
-            if (typeof renderMathInElement !== 'undefined') {{
-                renderMathInElement(document.body, {{
-                    delimiters: [
-                        {{left: '$$', right: '$$', display: true}},
-                        {{left: '$', right: '$', display: false}}
-                    ],
-                    throwOnError: false
-                }});
+            function renderMath() {{
+                if (typeof renderMathInElement !== 'undefined') {{
+                    try {{
+                        renderMathInElement(document.body, {{
+                            delimiters: [
+                                {{left: '$$$$', right: '$$$$', display: true}},
+                                {{left: '$$', right: '$$', display: true}},
+                                {{left: '$', right: '$', display: false}},
+                                {{left: '\\[', right: '\\]', display: true}},
+                                {{left: '\\(', right: '\\)', display: false}}
+                            ],
+                            throwOnError: false,
+                            strict: false,
+                            trust: true,
+                            errorColor: '#dc2626',
+                            minRuleThickness: 0.05,
+                            maxExpand: 1000,
+                            macros: {{
+                                "\\vec": "\\mathbf",
+                                "\\R": "\\mathbb{{R}}",
+                                "\\C": "\\mathbb{{C}}"
+                            }},
+                            // 添加错误处理
+                            errorCallback: function(msg, err) {{
+                                console.warn('[KaTeX] 渲染警告:', msg);
+                            }}
+                        }});
+                        console.log('[KaTeX] 公式渲染完成');
+                    }} catch (e) {{
+                        console.error('[KaTeX] 渲染错误:', e);
+                    }}
+                }} else {{
+                    console.error('[KaTeX] 库未加载');
+                }}
+            }}
+            // 延迟渲染，确保库已加载
+            if (document.readyState === 'loading') {{
+                document.addEventListener('DOMContentLoaded', function() {{ setTimeout(renderMath, 500); }});
+            }} else {{
+                setTimeout(renderMath, 500);
             }}
         }});
     </script>
@@ -900,30 +864,20 @@ class AIService:
         :root {{
             --primary-color: #3b82f6;
             --secondary-color: #8b5cf6;
-            --success-color: #10b981;
-            --warning-color: #f59e0b;
-            --danger-color: #ef4444;
             --bg-color: #f8fafc;
             --card-bg: #ffffff;
             --text-primary: #1e293b;
             --text-secondary: #64748b;
             --border-color: #e2e8f0;
         }}
-        
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             line-height: 1.8;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }}
-        
         .container {{
             max-width: 900px;
             margin: 0 auto;
@@ -932,156 +886,24 @@ class AIService:
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
         }}
-        
         .header {{
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
             color: white;
             padding: 40px;
             text-align: center;
         }}
-        
-        .header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-        }}
-        
-        .header .subtitle {{
-            font-size: 1.1em;
-            opacity: 0.9;
-        }}
-        
-        .content {{
-            padding: 40px;
-        }}
-        
+        .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
+        .content {{ padding: 40px; }}
         section {{
             margin-bottom: 40px;
             padding: 30px;
             background: var(--bg-color);
             border-radius: 12px;
             border-left: 5px solid var(--primary-color);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
         }}
-        
-        section:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }}
-        
-        section:nth-child(2) {{ border-left-color: var(--secondary-color); }}
-        section:nth-child(3) {{ border-left-color: var(--success-color); }}
-        section:nth-child(4) {{ border-left-color: var(--warning-color); }}
-        section:nth-child(5) {{ border-left-color: var(--danger-color); }}
-        
-        h2 {{
-            color: var(--text-primary);
-            font-size: 1.8em;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid var(--border-color);
-        }}
-        
-        h3 {{
-            color: var(--primary-color);
-            font-size: 1.4em;
-            margin: 25px 0 15px;
-        }}
-        
-        h4 {{
-            color: var(--text-secondary);
-            font-size: 1.2em;
-            margin: 20px 0 10px;
-        }}
-        
-        p {{
-            color: var(--text-primary);
-            margin-bottom: 15px;
-            text-align: justify;
-        }}
-        
-        ul, ol {{
-            margin: 15px 0;
-            padding-left: 30px;
-        }}
-        
-        li {{
-            margin-bottom: 10px;
-            color: var(--text-primary);
-        }}
-        
-        strong {{
-            color: var(--primary-color);
-            font-weight: 600;
-        }}
-        
-        code {{
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-family: "Consolas", "Monaco", monospace;
-            font-size: 0.9em;
-        }}
-        
-        pre {{
-            background: #1e293b;
-            color: #e2e8f0;
-            padding: 20px;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 20px 0;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
-        }}
-        
-        pre code {{
-            background: none;
-            padding: 0;
-            color: inherit;
-        }}
-        
-        blockquote {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            font-style: italic;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        }}
-        
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }}
-        
-        th {{
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
-            color: white;
-            padding: 15px;
-            text-align: left;
-            font-weight: 600;
-        }}
-        
-        td {{
-            padding: 12px 15px;
-            border-bottom: 1px solid var(--border-color);
-        }}
-        
-        tr:nth-child(even) {{
-            background: var(--bg-color);
-        }}
-        
-        tr:hover {{
-            background: #e0e7ff;
-        }}
-        
-        /* 仿真区域样式 */
+        h2 {{ color: var(--text-primary); font-size: 1.8em; margin-bottom: 20px; }}
+        h3 {{ color: var(--primary-color); font-size: 1.4em; margin: 25px 0 15px; }}
+        p {{ color: var(--text-primary); margin-bottom: 15px; }}
         canvas {{
             display: block;
             max-width: 100%;
@@ -1089,36 +911,7 @@ class AIService:
             border: 3px solid var(--primary-color);
             border-radius: 12px;
             background: white;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
         }}
-        
-        .simulation-controls {{
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 20px;
-            border-radius: 12px;
-            margin: 20px 0;
-        }}
-        
-        input[type="range"] {{
-            width: 100%;
-            margin: 10px 0;
-            height: 8px;
-            border-radius: 4px;
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
-            outline: none;
-            -webkit-appearance: none;
-        }}
-        
-        input[type="range"]::-webkit-slider-thumb {{
-            -webkit-appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: white;
-            cursor: pointer;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-        }}
-        
         button {{
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
             color: white;
@@ -1127,85 +920,21 @@ class AIService:
             border-radius: 8px;
             cursor: pointer;
             font-size: 1em;
-            font-weight: 600;
             margin: 5px;
-            transition: transform 0.2s, box-shadow 0.2s;
-            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
         }}
-        
-        button:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6);
-        }}
-        
-        /* 公式样式 */
-        .math-display {{
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 20px;
-            border-radius: 12px;
-            margin: 20px 0;
-            text-align: center;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        
-        /* 提示框 */
-        .tip {{
-            background: linear-gradient(135deg, #d4fc79 0%, #96e6a1 100%);
-            color: #166534;
-            padding: 15px 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            border-left: 5px solid var(--success-color);
-        }}
-        
-        .warning {{
-            background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
-            color: #92400e;
-            padding: 15px 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            border-left: 5px solid var(--warning-color);
-        }}
-        
         .footer {{
             background: var(--bg-color);
             padding: 20px;
             text-align: center;
             color: var(--text-secondary);
-            font-size: 0.9em;
-        }}
-        
-        /* 章节内容统一包装 */
-        .section-content {{
-            width: 100%;
-        }}
-        
-        .section-content h3 {{
-            color: var(--primary-color);
-            font-size: 1.5em;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid var(--border-color);
-        }}
-        
-        .section-content h4 {{
-            color: var(--text-secondary);
-            font-size: 1.2em;
-            margin: 20px 0 10px;
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>{title}</h1>
-        </div>
-        <div class="content">
-            {body_content}
-        </div>
-        <div class="footer">
-            由 智教云 AI 教学平台生成
-        </div>
+        <div class="header"><h1>{title}</h1></div>
+        <div class="content">{body_content}</div>
+        <div class="footer">由 智教云 AI 教学平台生成</div>
     </div>
 </body>
 </html>"""

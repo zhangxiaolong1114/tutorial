@@ -553,6 +553,25 @@ User (1)
 | `/generation-configs/{id}` | GET | 配置详情 | `generation_config.py` |
 | `/generation-configs/{id}` | DELETE | 删除配置 | `generation_config.py` |
 
+### AI 模型接口 (`/api/ai-models`)
+
+| 接口 | 方法 | 说明 | 文件 |
+|------|------|------|------|
+| `/api/ai-models/list` | GET | 获取可用模型列表 | `ai_models.py` |
+| `/api/ai-models/recommendations/{task_type}` | GET | 获取推荐模型 | `ai_models.py` |
+| `/api/ai-models/defaults` | GET | 获取默认模型配置 | `ai_models.py` |
+| `/api/ai-models/pricing` | GET | 获取价格概览 | `ai_models.py` |
+
+### 成本统计接口 (`/api/costs`)
+
+| 接口 | 方法 | 说明 | 文件 |
+|------|------|------|------|
+| `/api/costs/document/{id}` | GET | 获取文档成本汇总 | `costs.py` |
+| `/api/costs/document/{id}/details` | GET | 获取详细成本记录 | `costs.py` |
+| `/api/costs/stats` | GET | 获取用户成本统计 | `costs.py` |
+| `/api/costs/history` | GET | 获取成本历史 | `costs.py` |
+| `/api/costs/documents` | GET | 获取所有文档成本 | `costs.py` |
+
 ---
 
 ## 关键技术决策
@@ -584,7 +603,35 @@ context_window = 256000 # 256k 上下文
 - 成本较低
 - 国内访问稳定
 
-**备选**: Claude (复杂代码生成)、GPT-4 (高质量内容)
+**2026-03-26 更新**: 已支持多模型路由系统
+
+**支持的模型**:
+| 模型 | 提供商 | 价格(输入/输出) | 特点 |
+|------|--------|-----------------|------|
+| Kimi K2.5 | Moonshot | ¥0.02/¥0.02 | 默认全能，质量高 |
+| DeepSeek V3 | DeepSeek | ¥0.002/¥0.008 | 性价比首选 |
+| Qwen Coder | 阿里云 | ¥0.004/¥0.012 | 代码生成 |
+| GLM-4 | 智谱 | ¥0.005/¥0.005 | 中文优化 |
+
+**模型选择策略**:
+- 极速模式: 全部 DeepSeek V3 (成本最低)
+- 均衡模式: DeepSeek + Kimi 组合
+- 质量优先: 全部 Kimi K2.5
+- 仿真专用: DeepSeek + Kimi + Qwen
+
+**成本统计**:
+- 每次 AI 调用自动记录 token 消耗
+- 按模型价格计算实际成本
+- 文档生成完成后汇总总成本
+- API: `GET /api/costs/document/{id}`
+
+**技术实现**:
+- 模型注册中心: `backend/app/core/model_router.py`
+- 多模型调用器: `backend/app/core/model_callers.py`
+- 成本追踪器: `backend/app/core/cost_tracker.py`
+- 前端选择器: `frontend/src/components/ModelSelector.vue`
+
+**注意**: 已移除 Claude/OpenAI，仅保留国内可访问模型
 
 ### 3. 公式渲染
 
@@ -630,6 +677,9 @@ context_window = 256000 # 256k 上下文
 - ✅ 章节衔接优化（移除生硬衔接要求）
 - ✅ 标签验证修复（放宽 section 标签检查）
 - ✅ k2.5 模型兼容（temperature=1.0 自动设置）
+- ✅ AI 模型路由系统（支持多模型选择）
+- ✅ 成本统计系统（自动记录每次调用成本）
+- ✅ 国内模型支持（移除 Claude/OpenAI）
 
 ### 待优化 ⏳
 - ⏳ 仿真交互稳定性（持续优化 Prompt）
@@ -671,5 +721,96 @@ SMTP_PASSWORD=...
 
 ---
 
-*文档版本: v2.0*
-*最后更新: 2026-03-24*
+---
+
+## Phase 5: 仿真沙箱安全隔离与性能优化 (已完成)
+
+### 5.1 核心改进
+
+#### 5.1.1 移除仿真模板系统
+- **问题**: 预定义模板通用性差、维护困难
+- **方案**: 完全移除模板匹配，所有仿真通过 AI 实时生成
+- **影响**: 更灵活，支持任意类型仿真
+
+#### 5.1.2 iframe 沙箱安全隔离
+- **架构**: 独立的沙箱页面 + 组件封装
+- **安全特性**:
+  - CSP (Content Security Policy) 限制资源加载
+  - 拦截危险操作: `window.open`, `fetch`, `XHR`, `WebSocket`, `eval`
+  - 阻止数据存储: `localStorage`, `sessionStorage`, `cookie`
+  - 通过 `postMessage` 安全通信
+- **文件**:
+  - `frontend/public/sandbox.html` - 沙箱页面
+  - `frontend/src/components/SimulationSandbox.vue` - 沙箱组件
+
+#### 5.1.3 仿真生成速度优化（分块生成）
+- **问题**: 单次请求 token 多，容易超时
+- **方案**: 两阶段分块生成
+  - 阶段1: 生成结构和样式（JSON）
+  - 阶段2: 生成物理计算和渲染逻辑（JS）
+- **效果**: 
+  - Prompt tokens 减少 40%
+  - 超时风险大幅降低
+  - 失败可重试，不浪费已生成内容
+
+#### 5.1.4 日志系统重构
+- **架构**: 按模块拆分 + 结构化日志
+- **日志文件**:
+  - `app.log` - 应用主日志
+  - `error.log` - 错误日志
+  - `ai_service.log` - AI 服务日志
+  - `task_queue.log` - 任务队列日志
+  - `tasks/YYYYMMDD/task_{id}.json` - 任务详细日志
+- **特性**: 自动轮转、详细追踪、便于崩溃排查
+
+#### 5.1.5 任务队列增强
+- **新增功能**:
+  - 任务超时处理（大纲5分钟/文档30分钟）
+  - 卡住任务自动恢复（1小时超时检测）
+  - 详细错误分类和追踪
+  - 章节级错误隔离
+
+### 5.2 模型路由优化
+
+#### 5.2.1 问题与修复
+- **问题**: 前端设置模型与实际使用不一致
+- **原因**: 模型ID大小写不匹配
+- **修复**: 添加大小写不敏感的模型ID匹配
+
+#### 5.2.2 模型使用记录
+- **后端**: 任务结果中记录 `models_used`
+- **前端**: 任务中心显示使用的模型标签
+- **格式**:
+  ```json
+  [
+    {"task": "section", "model_id": "Qwen-3.5-Plus", "section": "概念讲解"},
+    {"task": "simulation", "model_id": "kimi-k2.5", "section": "交互仿真"}
+  ]
+  ```
+
+### 5.3 公式渲染修复
+- **问题**: KaTeX 渲染失败（红色公式、无限递归）
+- **修复**:
+  - 移除导致无限递归的宏定义
+  - 添加 `maxExpand: 1000` 限制宏展开
+  - 简化转义处理
+
+---
+
+## 文档索引
+
+| 文档 | 路径 | 说明 |
+|------|------|------|
+| 需求文档 | `doc/requirements.md` | 产品需求定义 |
+| 架构说明 | `doc/ARCHITECTURE.md` | 技术架构详解（本文件） |
+| 任务清单 | `doc/TASKS.md` | 开发进度跟踪 |
+| Phase 5 实现 | `doc/IMPLEMENTATION_PHASE5.md` | Phase 5 详细实现 |
+| 沙箱设计 | `doc/SIMULATION_SANDBOX.md` | 仿真沙箱设计文档 |
+| 仿真优化 | `doc/SIMULATION_OPTIMIZATION.md` | 仿真生成优化设计 |
+| 日志系统 | `doc/LOGGING_SYSTEM.md` | 日志系统重构设计 |
+| API 模型格式 | `doc/API_TASK_MODELS.md` | 任务模型API格式 |
+
+---
+
+*文档版本: v2.2*
+*最后更新: 2026-03-26*

@@ -35,8 +35,10 @@ Thumbs.db
 backend/.env
 backend/test.db
 backend/*.db
+backend/scripts/
 frontend/dist/
 frontend/.env
+*.md
 
 # Docker
 postgres_data/

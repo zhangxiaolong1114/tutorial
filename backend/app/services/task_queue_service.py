@@ -1,15 +1,20 @@
 """
-任务队列服务
-管理异步任务的创建、执行和状态查询
+任务队列服务 - 增强版
+添加结构化日志、异常追踪、任务超时处理
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+import signal
+import sys
+import traceback
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Callable, Dict, Any
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.config import get_settings
+from app.core.cost_tracker import cost_tracker
+from app.core.task_logger import get_task_logger, TaskLogContext
 from app.models.task_queue import TaskQueue, TaskStatus, TaskType
 from app.services.ai_service import ai_service
 from app.services.file_storage_service import file_storage_service
@@ -19,14 +24,48 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+class TaskExecutionError(Exception):
+    """任务执行错误"""
+    def __init__(self, message: str, error_type: str = None, details: dict = None):
+        super().__init__(message)
+        self.error_type = error_type or "unknown"
+        self.details = details or {}
+
+
+class TaskTimeoutError(TaskExecutionError):
+    """任务超时错误"""
+    def __init__(self, timeout_seconds: int):
+        super().__init__(
+            f"任务执行超时（{timeout_seconds}秒）",
+            error_type="timeout",
+            details={"timeout_seconds": timeout_seconds}
+        )
+
+
 class TaskQueueService:
-    """任务队列服务"""
+    """任务队列服务 - 增强版"""
+    
+    # 任务超时配置（秒）
+    TASK_TIMEOUTS = {
+        TaskType.GENERATE_OUTLINE: 300,      # 5分钟
+        TaskType.GENERATE_DOCUMENT: 1800,    # 30分钟
+    }
     
     def __init__(self):
         self._running = False
         self._workers = []
         self._handlers: Dict[TaskType, Callable] = {}
+        self._shutdown_event = asyncio.Event()
         self._register_handlers()
+        
+        # 注册信号处理
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+    
+    def _signal_handler(self, signum, frame):
+        """处理系统信号"""
+        logger.info(f"收到信号 {signum}，准备优雅关闭...")
+        self._shutdown_event.set()
     
     def _register_handlers(self):
         """注册任务处理器"""
@@ -40,18 +79,7 @@ class TaskQueueService:
         task_type: TaskType,
         params: Dict[str, Any]
     ) -> TaskQueue:
-        """
-        创建新任务
-        
-        Args:
-            db: 数据库会话
-            user_id: 用户ID
-            task_type: 任务类型
-            params: 任务参数
-        
-        Returns:
-            创建的任务对象
-        """
+        """创建新任务"""
         task = TaskQueue(
             user_id=user_id,
             task_type=task_type,
@@ -63,7 +91,7 @@ class TaskQueueService:
         db.commit()
         db.refresh(task)
         
-        logger.info(f"Created task {task.id} for user {user_id}, type: {task_type}")
+        logger.info(f"[Task] 创建任务 {task.id} (用户 {user_id}, 类型 {task_type})")
         return task
     
     def get_task(self, db: Session, task_id: int, user_id: int) -> Optional[TaskQueue]:
@@ -89,139 +117,457 @@ class TaskQueueService:
         return query.order_by(TaskQueue.created_at.desc()).limit(limit).all()
     
     def get_pending_tasks(self, db: Session, limit: int = 10):
-        """获取待处理的任务（用于工作线程）"""
+        """获取待处理的任务（包含卡住的任务）"""
+        # 同时获取卡住的任务（处理中但超时）
+        timeout_threshold = datetime.now() - timedelta(hours=1)
+        
         return db.query(TaskQueue).filter(
-            TaskQueue.status == TaskStatus.PENDING
+            (TaskQueue.status == TaskStatus.PENDING) |
+            ((TaskQueue.status == TaskStatus.PROCESSING) & 
+             (TaskQueue.started_at < timeout_threshold))
         ).order_by(TaskQueue.created_at.asc()).limit(limit).all()
     
-    def _handle_generate_outline(self, db: Session, task: TaskQueue) -> Dict[str, Any]:
+    async def process_task(self, task_id: int):
+        """处理单个任务（带完整日志和异常处理）"""
+        db = SessionLocal()
+        task_logger = get_task_logger()
+        log_context: Optional[TaskLogContext] = None
+        
+        try:
+            task = db.query(TaskQueue).filter(TaskQueue.id == task_id).first()
+            if not task:
+                logger.warning(f"[Task] 任务 {task_id} 不存在")
+                return
+            
+            if task.status == TaskStatus.PROCESSING:
+                # 检查是否卡住（超时）
+                if task.started_at and (datetime.now() - task.started_at).seconds > 3600:
+                    logger.warning(f"[Task] 任务 {task_id} 卡住，重新执行")
+                else:
+                    logger.info(f"[Task] 任务 {task_id} 正在处理中，跳过")
+                    return
+            
+            # 初始化任务日志
+            log_context = task_logger.start_task(
+                task_id=str(task_id),
+                task_type=task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type),
+                user_id=task.user_id
+            )
+            
+            # 更新为处理中
+            task.status = TaskStatus.PROCESSING
+            task.started_at = datetime.now()
+            task.error_message = None  # 清除之前的错误
+            db.commit()
+            
+            log_context.info("任务开始处理", 
+                           task_type=task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type),
+                           params=task.get_params())
+            
+            logger.info(f"[Task] 开始处理任务 {task_id}, 类型: {task.task_type}")
+            
+            # 获取处理器
+            task_type_enum = TaskType(task.task_type) if isinstance(task.task_type, str) else task.task_type
+            handler = self._handlers.get(task_type_enum)
+            if not handler:
+                raise TaskExecutionError(f"未知任务类型: {task.task_type}", error_type="unknown_task_type")
+            
+            # 获取超时时间
+            timeout = self.TASK_TIMEOUTS.get(task_type_enum, 600)
+            
+            # 执行任务（带超时）
+            try:
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: self._execute_with_logging(handler, db, task, log_context)),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                raise TaskTimeoutError(timeout)
+            
+            # 更新为完成
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now()
+            task.set_result(result)
+            task.progress = 100
+            db.commit()
+            
+            log_context.info("任务完成", result=result)
+            task_logger.end_task(str(task_id), status="completed", result=result)
+            
+            logger.info(f"[Task] 任务 {task_id} 完成，结果: {result}")
+            
+        except TaskExecutionError as e:
+            logger.error(f"[Task] 任务 {task_id} 执行错误: {e}")
+            self._handle_task_error(db, task, e, log_context)
+            
+        except Exception as e:
+            logger.error(f"[Task] 任务 {task_id} 未预期错误: {e}")
+            logger.error(traceback.format_exc())
+            
+            # 包装为 TaskExecutionError
+            wrapped_error = TaskExecutionError(
+                message=str(e),
+                error_type=type(e).__name__,
+                details={"traceback": traceback.format_exc()}
+            )
+            self._handle_task_error(db, task, wrapped_error, log_context)
+            
+        finally:
+            db.close()
+    
+    def _execute_with_logging(self, handler: Callable, db: Session, task: TaskQueue, log_context: TaskLogContext):
+        """执行任务并记录详细日志"""
+        try:
+            return handler(db, task, log_context)
+        except Exception as e:
+            # 记录详细异常信息
+            log_context.exception(f"任务执行异常: {str(e)}")
+            raise
+    
+    def _handle_task_error(self, db: Session, task: TaskQueue, error: TaskExecutionError, log_context: Optional[TaskLogContext]):
+        """处理任务错误"""
+        task.status = TaskStatus.FAILED
+        task.completed_at = datetime.now()
+        
+        # 构建错误信息
+        error_info = {
+            "error_type": error.error_type,
+            "message": str(error),
+            "details": error.details
+        }
+        
+        # 限制错误信息长度
+        error_message = str(error)[:500]
+        task.error_message = error_message
+        task.set_result({"error": error_info})
+        
+        db.commit()
+        
+        if log_context:
+            log_context.error("任务失败", error_type=error.error_type, details=error.details)
+            get_task_logger().end_task(str(task.id), status="failed", result={"error": error_info})
+    
+    def _handle_generate_outline(self, db: Session, task: TaskQueue, log_context: TaskLogContext) -> Dict[str, Any]:
         """处理生成大纲任务"""
         from app.models.outline import Outline
-
+        
         params = task.get_params()
         course = params.get("course")
         knowledge_point = params.get("knowledge_point")
         difficulty = params.get("difficulty", "medium")
-        config = params.get("config")  # 获取配置
-
-        logger.info(f"生成大纲任务参数: course={course}, knowledge_point={knowledge_point}, difficulty={difficulty}")
-        logger.info(f"配置信息: config={config}")
-
-        # 调用AI服务生成大纲（使用配置）
-        if config:
-            logger.info(f"使用配置化生成方法: teaching_style={config.get('teaching_style')}, difficulty={config.get('difficulty')}")
-            # 使用新的配置化生成方法
-            outline_data = ai_service.generate_outline_with_config(
-                course=course,
-                knowledge_point=knowledge_point,
-                config=config,
-                task_id=str(task.id)
-            )
-        else:
-            logger.info("使用默认生成方法（无配置）")
-            # 使用旧方法（向后兼容）
-            outline_data = ai_service.generate_outline(
+        config = params.get("config")
+        
+        log_context.info("开始生成大纲",
+                        course=course,
+                        knowledge_point=knowledge_point,
+                        difficulty=difficulty,
+                        has_config=bool(config))
+        
+        # 更新进度
+        task.update_progress(10, {"phase": "generating_outline", "message": "正在生成教学大纲..."})
+        db.commit()
+        
+        # 获取模型配置
+        model_config = params.get("model_config", {})
+        outline_model_id = model_config.get("outline_model_id")
+        
+        # 记录使用的模型
+        models_used = []
+        
+        try:
+            # 调用AI服务
+            if config:
+                log_context.info("使用配置化生成", 
+                               teaching_style=config.get('teaching_style'),
+                               difficulty=config.get('difficulty'),
+                               model_id=outline_model_id or "default")
+                outline_data = ai_service.generate_outline(
+                    course=course,
+                    knowledge_point=knowledge_point,
+                    config=config,
+                    task_id=str(task.id),
+                    model_id=outline_model_id,
+                )
+            else:
+                log_context.info("使用默认生成方法", model_id=outline_model_id or "default")
+                outline_data = ai_service.generate_outline(
+                    course=course,
+                    knowledge_point=knowledge_point,
+                    config={"difficulty": difficulty},
+                    task_id=str(task.id),
+                    model_id=outline_model_id,
+                )
+            
+            # 记录使用的模型
+            models_used.append({
+                "task": "outline",
+                "model_id": outline_model_id or "kimi-k2.5 (default)"
+            })
+            
+            log_context.info("大纲生成完成", 
+                           section_count=len(outline_data.get('sections', [])),
+                           models_used=models_used)
+            
+        except Exception as e:
+            log_context.exception("大纲生成失败")
+            raise TaskExecutionError(f"大纲生成失败: {str(e)}", error_type="ai_generation_failed")
+        
+        # 创建大纲记录
+        try:
+            outline = Outline(
+                user_id=task.user_id,
                 course=course,
                 knowledge_point=knowledge_point,
                 difficulty=difficulty,
-                task_id=str(task.id)
+                outline_json="",
+                status="generated"
             )
+            
+            if config:
+                outline_data["config"] = config
+            
+            outline.set_outline_data(outline_data)
+            db.add(outline)
+            db.commit()
+            db.refresh(outline)
+            
+            log_context.info("大纲记录创建成功", outline_id=outline.id)
+            
+        except Exception as e:
+            log_context.exception("保存大纲失败")
+            raise TaskExecutionError(f"保存大纲失败: {str(e)}", error_type="database_error")
         
-        # 创建大纲记录
-        outline = Outline(
-            user_id=task.user_id,
-            course=course,
-            knowledge_point=knowledge_point,
-            difficulty=difficulty,
-            outline_json="",
-            status="generated"
-        )
-
-        # 将配置保存到大纲数据中，供后续文档生成使用
-        if config:
-            outline_data["config"] = config
-            logger.info(f"配置已保存到大纲数据: {config}")
-
-        outline.set_outline_data(outline_data)
-        
-        db.add(outline)
-        db.commit()
-        db.refresh(outline)
-        
-        # 更新任务关联资源
+        # 更新任务进度
+        task.update_progress(100, {"phase": "completed", "message": "大纲生成完成"})
         task.resource_id = outline.id
         task.resource_type = "outline"
         db.commit()
         
+        # 记录成本
+        try:
+            cost_tracker.record_cost_from_logs(
+                db=db,
+                task_id=str(task.id),
+                user_id=task.user_id,
+                outline_id=outline.id,
+                course=course,
+                knowledge_point=knowledge_point,
+            )
+        except Exception as e:
+            log_context.warning(f"记录成本失败: {e}")
+        
         return {
             "outline_id": outline.id,
-            "title": outline_data.get("title", f"{course} - {knowledge_point}")
+            "title": outline_data.get("title", f"{course} - {knowledge_point}"),
+            "models_used": models_used
         }
     
-    def _generate_section_sync(self, section: dict, course: str, knowledge_point: str) -> tuple:
-        """同步生成单个章节内容"""
-        section_id = section.get("id", "")
-        section_title = section.get("title", "")
-        section_content = section.get("content", [])
+    def _handle_generate_document(self, db: Session, task: TaskQueue, log_context: TaskLogContext) -> Dict[str, Any]:
+        """处理生成文档任务"""
+        from app.models.outline import Outline
+        from app.models.document import Document
         
-        try:
-            if section_id == "simulation" or "仿真" in section_title:
-                simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
-                html_content = ai_service.generate_simulation_code(
-                    simulation_desc=simulation_desc,
-                    course=course,
-                    knowledge_point=knowledge_point
-                )
-            else:
-                html_content = ai_service.generate_section_content(
-                    section_title=section_title,
-                    section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
-                    course=course,
-                    knowledge_point=knowledge_point
-                )
-            return (section_id, section_title, html_content, None)
-        except Exception as e:
-            logger.error(f"Failed to generate section {section_id}: {e}")
-            return (section_id, section_title, f"<p>内容生成失败: {str(e)}</p>", str(e))
-    
-    async def _generate_section_async(self, section: dict, course: str, knowledge_point: str) -> tuple:
-        """异步生成单个章节内容"""
-        section_id = section.get("id", "")
-        section_title = section.get("title", "")
-        section_content = section.get("content", [])
+        params = task.get_params()
+        outline_id = params.get("outline_id")
         
-        try:
-            # 仿真章节生成仿真代码
-            if section_id == "simulation" or "仿真" in section_title:
-                simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
-                # 在线程池中执行同步的 AI 调用
-                loop = asyncio.get_event_loop()
-                html_content = await loop.run_in_executor(
-                    None,
-                    lambda: ai_service.generate_simulation_code(
-                        simulation_desc=simulation_desc,
-                        course=course,
-                        knowledge_point=knowledge_point
-                    )
-                )
-            else:
-                # 普通章节生成HTML
-                loop = asyncio.get_event_loop()
-                html_content = await loop.run_in_executor(
-                    None,
-                    lambda: ai_service.generate_section_content(
-                        section_title=section_title,
-                        section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
-                        course=course,
-                        knowledge_point=knowledge_point
-                    )
-                )
+        log_context.info("开始生成文档", outline_id=outline_id)
+        
+        # 获取大纲
+        outline = db.query(Outline).filter(
+            Outline.id == outline_id,
+            Outline.user_id == task.user_id
+        ).first()
+        
+        if not outline:
+            raise TaskExecutionError(f"大纲 {outline_id} 不存在", error_type="outline_not_found")
+        
+        outline_data = outline.get_outline_data()
+        sections = outline_data.get("sections", [])
+        
+        # 获取配置
+        config = params.get("config") or outline_data.get("config")
+        model_config = params.get("model_config", {})
+        
+        logger.info(f"[Task {task.id}] 文档生成参数: params keys={list(params.keys())}, model_config={model_config}")
+        
+        # 获取模型配置
+        section_model_id = model_config.get("section_model_id")
+        simulation_model_id = model_config.get("simulation_model_id")
+        
+        log_context.info("文档生成配置",
+                        section_count=len(sections),
+                        has_config=bool(config),
+                        model_config=model_config,
+                        section_model_id=section_model_id or "default",
+                        simulation_model_id=simulation_model_id or "default")
+        
+        # 记录使用的模型
+        models_used = []
+        
+        # 初始化进度
+        task.update_progress(5, {
+            "phase": "initializing",
+            "message": "开始生成文档...",
+            "total_sections": len(sections)
+        })
+        db.commit()
+        
+        # 准备大纲结构信息
+        outline_structure = "\n".join([
+            f"{i+1}. {s.get('title', '未命名')}"
+            for i, s in enumerate(sections)
+        ])
+        
+        # 生成每个章节
+        html_contents = []
+        generated_sections = []
+        prev_section_summary = None
+        
+        for section_index, section in enumerate(sections):
+            section_id = section.get("id", "")
+            section_title = section.get("title", "")
+            section_content = section.get("content", [])
             
-            return (section_id, section_title, html_content, None)
+            # 更新进度
+            progress = 10 + int((section_index / len(sections)) * 80)
+            task.update_progress(progress, {
+                "phase": "generating_sections",
+                "current_section": section_title,
+                "section_index": section_index + 1,
+                "total_sections": len(sections),
+                "message": f"正在生成章节: {section_title}"
+            })
+            db.commit()
+            
+            log_context.info(f"生成章节 {section_index + 1}/{len(sections)}",
+                           section_id=section_id,
+                           section_title=section_title)
+            
+            # 构建上下文
+            context = {
+                "outline_structure": outline_structure,
+                "position": {
+                    "current_index": section_index,
+                    "total": len(sections),
+                    "prev_title": sections[section_index - 1].get("title") if section_index > 0 else None,
+                    "next_title": sections[section_index + 1].get("title") if section_index < len(sections) - 1 else None
+                },
+                "prev_summary": prev_section_summary,
+                "generated_sections": "\n".join([
+                    f"- {s.get('title')}" for s in sections[:section_index]
+                ]) if section_index > 0 else "无"
+            }
+            
+            # 生成章节
+            try:
+                section_result = self._generate_section_with_retry(
+                    section=section,
+                    section_index=section_index,
+                    outline=outline,
+                    config=config,
+                    task_id=str(task.id),
+                    context=context,
+                    max_retries=2,
+                    model_config=model_config,
+                )
+                
+                html_contents.append(section_result['html'])
+                generated_sections.append(section_result['meta'])
+                
+                # 记录使用的模型
+                model_used = section_result['meta'].get('model_used', 'unknown')
+                if model_used and model_used not in [m['model_id'] for m in models_used]:
+                    models_used.append({
+                        "task": "simulation" if section_result['meta'].get('type') == 'simulation' else 'section',
+                        "model_id": model_used,
+                        "section": section_title
+                    })
+                
+                if section_result['meta']['generated']:
+                    prev_section_summary = self._extract_section_summary(section_title, section_result['content'])
+                    log_context.info(f"章节 {section_id} 生成成功", model_used=model_used)
+                else:
+                    prev_section_summary = {
+                        "title": section_title,
+                        "content": "章节生成失败，将在文档中显示错误提示。"
+                    }
+                    log_context.warning(f"章节 {section_id} 生成失败", error=section_result['meta'].get('error'), model_used=model_used)
+                    
+            except Exception as e:
+                log_context.exception(f"章节 {section_id} 生成异常")
+                # 添加错误占位
+                error_html = f'<div class="warning"><strong>章节生成失败</strong><p>{section_title}</p><p>{str(e)[:200]}</p></div>'
+                html_contents.append(f"<section id='{section_id}'>{error_html}</section>")
+                generated_sections.append({
+                    "id": section_id,
+                    "title": section_title,
+                    "generated": False,
+                    "error": str(e),
+                    "model_used": (simulation_model_id if is_simulation else section_model_id) or "kimi-k2.5 (default)"
+                })
+        
+        # 合并内容
+        body_content = "\n\n".join(html_contents)
+        title = outline_data.get("title", f"{outline.course} - {outline.knowledge_point}")
+        
+        # 更新进度
+        task.update_progress(90, {
+            "phase": "finalizing",
+            "message": "正在生成最终文档..."
+        })
+        db.commit()
+        
+        # 生成完整 HTML
+        try:
+            full_html = ai_service.generate_complete_html(title, body_content)
+            log_context.info("HTML文档生成完成", content_length=len(full_html))
         except Exception as e:
-            logger.error(f"Failed to generate section {section_id}: {e}")
-            return (section_id, section_title, f"<p>内容生成失败: {str(e)}</p>", str(e))
-
+            log_context.exception("生成HTML文档失败")
+            raise TaskExecutionError(f"生成HTML文档失败: {str(e)}", error_type="html_generation_failed")
+        
+        # 保存文档
+        try:
+            document = self._save_document(
+                db=db,
+                task=task,
+                outline=outline,
+                title=title,
+                full_html=full_html,
+                generated_sections=generated_sections,
+                log_context=log_context
+            )
+        except Exception as e:
+            log_context.exception("保存文档失败")
+            raise TaskExecutionError(f"保存文档失败: {str(e)}", error_type="save_failed")
+        
+        # 更新任务
+        task.resource_id = document.id
+        task.resource_type = "document"
+        db.commit()
+        
+        # 记录成本
+        try:
+            cost_tracker.record_cost_from_logs(
+                db=db,
+                task_id=str(task.id),
+                user_id=task.user_id,
+                outline_id=outline.id,
+                document_id=document.id,
+                course=outline.course,
+                knowledge_point=outline.knowledge_point,
+            )
+        except Exception as e:
+            log_context.warning(f"记录成本失败: {e}")
+        
+        log_context.info("文档生成完成", document_id=document.id, models_used=models_used)
+        
+        return {
+            "document_id": document.id,
+            "title": title,
+            "models_used": models_used
+        }
+    
     def _generate_section_with_retry(
         self,
         section: dict,
@@ -230,50 +576,36 @@ class TaskQueueService:
         config: dict,
         task_id: str,
         context: dict,
-        max_retries: int = 2
+        max_retries: int = 2,
+        model_config: dict = None,
     ) -> dict:
-        """
-        带重试机制的章节生成
-        
-        Args:
-            section: 章节信息
-            section_index: 章节索引
-            outline: 大纲对象
-            config: 配置
-            task_id: 任务ID
-            context: 上下文信息
-            max_retries: 最大重试次数
-        
-        Returns:
-            {
-                'html': 章节HTML,
-                'content': 提取的内容（用于摘要）,
-                'meta': 章节元数据
-            }
-        """
+        """带重试机制的章节生成"""
         section_id = section.get("id", "")
         section_title = section.get("title", "")
         section_content = section.get("content", [])
         is_simulation = section_id == "simulation" or "仿真" in section_title
         
+        model_config = model_config or {}
+        section_model_id = model_config.get("section_model_id")
+        simulation_model_id = model_config.get("simulation_model_id")
+        
+        logger.info(f"[Task {task_id}] 生成章节 {section_id}, is_simulation={is_simulation}, model_config={model_config}")
+        
         for attempt in range(max_retries + 1):
             try:
                 if is_simulation:
-                    # 仿真章节 - 构建增强的仿真描述，包含上下文信息
+                    # 仿真章节
                     simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
                     
-                    # 从前置章节提取核心公式和概念
-                    key_concepts = []
+                    # 提取核心公式
                     key_formulas = []
                     if context and context.get("prev_summary"):
                         prev_content = context["prev_summary"].get("content", "")
-                        # 提取可能的公式（简化处理）
                         import re
                         formulas = re.findall(r'\$\$.*?\$\$', prev_content)
                         if formulas:
-                            key_formulas.extend(formulas[:3])  # 最多取3个公式
+                            key_formulas.extend(formulas[:3])
                     
-                    # 构建仿真上下文
                     simulation_context = {
                         "prev_summary": context.get("prev_summary") if context else None,
                         "outline_structure": context.get("outline_structure") if context else None,
@@ -281,27 +613,50 @@ class TaskQueueService:
                         "section_content": section_content if isinstance(section_content, list) else [str(section_content)]
                     }
                     
-                    if config:
-                        logger.info(f"[Retry {attempt}] 使用配置化生成仿真: {section_id}")
-                        simulation_html = ai_service.generate_simulation_code_with_config(
-                            simulation_desc=simulation_desc,
-                            course=outline.course,
-                            knowledge_point=outline.knowledge_point,
-                            simulation_types=config.get('simulation_types', ['animation']),
-                            config=config,
-                            task_id=task_id,
-                            context=simulation_context
-                        )
-                    else:
-                        logger.info(f"[Retry {attempt}] 使用默认生成仿真: {section_id}")
-                        simulation_html = ai_service.generate_simulation_code(
-                            simulation_desc=simulation_desc,
-                            course=outline.course,
-                            knowledge_point=outline.knowledge_point,
-                            task_id=task_id
-                        )
+                    logger.info(f"[Task {task_id}] 开始生成仿真: {simulation_desc[:100]}")
                     
-                    has_error = '仿真代码生成失败' in simulation_html
+                    try:
+                        if config:
+                            simulation_html = ai_service.generate_simulation(
+                                simulation_desc=simulation_desc,
+                                course=outline.course,
+                                knowledge_point=outline.knowledge_point,
+                                simulation_types=config.get('simulation_types', ['animation']),
+                                config=config,
+                                task_id=task_id,
+                                context=simulation_context,
+                                model_id=simulation_model_id,
+                            )
+                        else:
+                            simulation_html = ai_service.generate_simulation(
+                                simulation_desc=simulation_desc,
+                                course=outline.course,
+                                knowledge_point=outline.knowledge_point,
+                                config={},
+                                task_id=task_id,
+                                model_id=simulation_model_id,
+                            )
+                        
+                        logger.info(f"[Task {task_id}] 仿真生成完成, HTML长度: {len(simulation_html)}")
+                        
+                        has_error = '仿真代码生成失败' in simulation_html or '仿真生成失败' in simulation_html or len(simulation_html) < 500
+                        
+                    except Exception as sim_error:
+                        logger.error(f"[Task {task_id}] 仿真生成异常: {sim_error}")
+                        # 返回错误占位
+                        error_html = f'<div class="warning"><strong>仿真生成失败</strong><p>错误：{str(sim_error)[:200]}</p></div>'
+                        return {
+                            'html': f"<section id='{section_id}'>{error_html}</section>",
+                            'content': error_html,
+                            'meta': {
+                                "id": section_id,
+                                "title": section_title,
+                                "generated": False,
+                                "error": str(sim_error),
+                                "type": "simulation",
+                                "retry_count": attempt
+                            }
+                        }
                     
                     if not has_error:
                         wrapped_html = f'''<div class="section-content">
@@ -319,15 +674,14 @@ class TaskQueueService:
                                 "generated": True,
                                 "error": None,
                                 "type": "simulation",
-                                "retry_count": attempt
+                                "retry_count": attempt,
+                                "model_used": simulation_model_id or "kimi-k2.5 (default)"
                             }
                         }
                     elif attempt < max_retries:
-                        logger.warning(f"仿真生成失败，准备重试 ({attempt + 1}/{max_retries})")
                         import time
-                        time.sleep(2 ** attempt)  # 指数退避
+                        time.sleep(2 ** attempt)
                     else:
-                        # 重试耗尽，返回错误
                         return {
                             'html': f"<section id='{section_id}'>\n{simulation_html}\n</section>",
                             'content': simulation_html,
@@ -337,32 +691,34 @@ class TaskQueueService:
                                 "generated": False,
                                 "error": "仿真生成失败（重试耗尽）",
                                 "type": "simulation",
-                                "retry_count": attempt
+                                "retry_count": attempt,
+                                "model_used": simulation_model_id or "kimi-k2.5 (default)"
                             }
                         }
                 
                 else:
-                    # 普通章节使用 Kimi
+                    # 普通章节
                     if config:
-                        logger.info(f"[Retry {attempt}] 使用配置化生成章节: {section_id}")
-                        html_content = ai_service.generate_section_content_with_config(
+                        html_content = ai_service.generate_section(
                             section_title=section_title,
                             section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
                             course=outline.course,
                             knowledge_point=outline.knowledge_point,
                             config=config,
                             task_id=task_id,
-                            context=context
+                            model_id=section_model_id,
+                            context=context,
                         )
                     else:
-                        logger.info(f"[Retry {attempt}] 使用默认生成章节: {section_id}")
-                        html_content = ai_service.generate_section_content(
+                        html_content = ai_service.generate_section(
                             section_title=section_title,
                             section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
                             course=outline.course,
                             knowledge_point=outline.knowledge_point,
+                            config={},
                             task_id=task_id,
-                            context=context
+                            model_id=section_model_id,
+                            context=context,
                         )
                     
                     has_error = '内容生成失败' in html_content
@@ -377,13 +733,13 @@ class TaskQueueService:
                                 "generated": True,
                                 "error": None,
                                 "type": "content",
-                                "retry_count": attempt
+                                "retry_count": attempt,
+                                "model_used": section_model_id or "kimi-k2.5 (default)"
                             }
                         }
                     elif attempt < max_retries:
-                        logger.warning(f"章节生成返回错误，准备重试 ({attempt + 1}/{max_retries})")
                         import time
-                        time.sleep(2 ** attempt)  # 指数退避
+                        time.sleep(2 ** attempt)
                     else:
                         return {
                             'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
@@ -394,7 +750,8 @@ class TaskQueueService:
                                 "generated": False,
                                 "error": "AI生成返回失败内容（重试耗尽）",
                                 "type": "content",
-                                "retry_count": attempt
+                                "retry_count": attempt,
+                                "model_used": section_model_id or "kimi-k2.5 (default)"
                             }
                         }
                         
@@ -404,7 +761,6 @@ class TaskQueueService:
                     import time
                     time.sleep(2 ** attempt)
                 else:
-                    # 重试耗尽，返回错误内容但不中断整个文档
                     error_content = f'<div class="warning"><strong>内容生成失败</strong><p>章节：{section_title}</p><p>错误：{str(e)[:200]}</p></div>'
                     return {
                         'html': f"<section id='{section_id}'>\n{error_content}\n</section>",
@@ -415,118 +771,49 @@ class TaskQueueService:
                             "generated": False,
                             "error": str(e),
                             "type": "simulation" if is_simulation else "content",
-                            "retry_count": attempt
+                            "retry_count": attempt,
+                            "model_used": (simulation_model_id if is_simulation else section_model_id) or "kimi-k2.5 (default)"
                         }
                     }
-
-    def _handle_generate_document(self, db: Session, task: TaskQueue) -> Dict[str, Any]:
-        """处理生成文档任务"""
-        from app.models.outline import Outline
+    
+    def _extract_section_summary(self, section_title: str, html_content: str) -> dict:
+        """从章节 HTML 内容中提取摘要"""
+        import re
+        
+        text = re.sub(r'<[^>]+>', ' ', html_content)
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        summary_text = text[:300] if len(text) > 300 else text
+        
+        formulas = re.findall(r'\$\$(.*?)\$\$', html_content)
+        formula_summary = f"核心公式: {'; '.join(formulas[:2])}" if formulas else ""
+        
+        return {
+            "title": section_title,
+            "content": summary_text,
+            "formulas": formula_summary
+        }
+    
+    def _save_document(self, db: Session, task: TaskQueue, outline, title: str, 
+                       full_html: str, generated_sections: list, log_context: TaskLogContext) -> "Document":
+        """保存文档到数据库或文件系统"""
         from app.models.document import Document
         
-        params = task.get_params()
-        outline_id = params.get("outline_id")
-
-        # 获取大纲
-        outline = db.query(Outline).filter(
-            Outline.id == outline_id,
-            Outline.user_id == task.user_id
-        ).first()
-
-        if not outline:
-            raise ValueError(f"Outline {outline_id} not found")
-
-        outline_data = outline.get_outline_data()
-        sections = outline_data.get("sections", [])
-
-        # 获取配置（优先从任务参数获取，否则从大纲数据获取）
-        config = params.get("config") or outline_data.get("config")
-        logger.info(f"生成文档任务参数: outline_id={outline_id}, sections={len(sections)}")
-        logger.info(f"配置信息: config={config}")
-
-        logger.info(f"Starting generation of {len(sections)} sections for document with context coherence")
-
-        # 准备大纲结构信息（用于上下文）
-        outline_structure = "\n".join([
-            f"{i+1}. {s.get('title', '未命名')} ({s.get('id', 'unknown')})"
-            for i, s in enumerate(sections)
-        ])
-
-        # 生成每个章节的HTML内容（带上下文连贯性）
-        html_contents = []
-        generated_sections = []
-        prev_section_summary = None  # 前一章的摘要
-
-        for section_index, section in enumerate(sections):
-            section_id = section.get("id", "")
-            section_title = section.get("title", "")
-            section_content = section.get("content", [])
-
-            # 构建上下文信息
-            context = {
-                "outline_structure": outline_structure,
-                "position": {
-                    "current_index": section_index,
-                    "total": len(sections),
-                    "prev_title": sections[section_index - 1].get("title") if section_index > 0 else None,
-                    "next_title": sections[section_index + 1].get("title") if section_index < len(sections) - 1 else None
-                },
-                "prev_summary": prev_section_summary,
-                "generated_sections": "\n".join([
-                    f"- {s.get('title')}" for s in sections[:section_index]
-                ]) if section_index > 0 else "无"
-            }
-
-            # 使用重试机制生成章节内容
-            section_result = self._generate_section_with_retry(
-                section=section,
-                section_index=section_index,
-                outline=outline,
-                config=config,
-                task_id=str(task.id),
-                context=context,
-                max_retries=2
-            )
-            
-            html_contents.append(section_result['html'])
-            generated_sections.append(section_result['meta'])
-            
-            if section_result['meta']['generated']:
-                # 提取本章摘要用于下一章的上下文
-                prev_section_summary = self._extract_section_summary(section_title, section_result['content'])
-                logger.info(f"Section {section_id} summary extracted for next section context")
-            else:
-                # 生成失败，使用简化摘要
-                prev_section_summary = {
-                    "title": section_title,
-                    "content": f"章节生成失败，将在文档中显示错误提示。"
-                }
-        
-        # 合并 body 内容
-        body_content = "\n\n".join(html_contents)
-        title = outline_data.get("title", f"{outline.course} - {outline.knowledge_point}")
-
-        # 生成完整 HTML 文档
-        full_html = ai_service.generate_complete_html(title, body_content)
-
-        # 根据存储类型决定保存方式
-        file_path = None
-
         if settings.STORAGE_TYPE == "filesystem":
-            # 先创建文档记录获取 ID
+            # 先创建记录
             document = Document(
                 user_id=task.user_id,
                 outline_id=outline.id,
                 title=title,
-                html_content=None,  # 暂时为空
+                html_content=None,
                 file_path=None,
-                simulation_code=None  # 仿真代码已嵌入 HTML
+                simulation_code=None
             )
             document.set_sections_data(generated_sections)
             db.add(document)
             db.commit()
             db.refresh(document)
-
+            
             # 保存到文件系统
             file_path = file_storage_service.save_document(
                 document_id=document.id,
@@ -534,130 +821,64 @@ class TaskQueueService:
                 title=title,
                 html_content=full_html
             )
-
+            
             if file_path:
-                # 更新文件路径，数据库只存摘要（前500字符）
                 document.file_path = file_path
                 document.html_content = full_html[:500] + "..." if len(full_html) > 500 else full_html
                 db.commit()
-                logger.info(f"Document {document.id} saved to filesystem: {file_path}")
+                log_context.info("文档保存到文件系统", file_path=file_path)
             else:
-                # 文件系统保存失败，回退到数据库存储
                 document.html_content = full_html
                 db.commit()
-                logger.warning(f"Failed to save to filesystem, fallback to database for document {document.id}")
+                log_context.warning("文件系统保存失败，回退到数据库")
         else:
-            # 数据库存储模式
+            # 数据库存储
             document = Document(
                 user_id=task.user_id,
                 outline_id=outline.id,
                 title=title,
                 html_content=full_html,
-                simulation_code=None  # 仿真代码已嵌入 HTML
+                simulation_code=None
             )
             document.set_sections_data(generated_sections)
             db.add(document)
             db.commit()
             db.refresh(document)
-
-        # 更新任务关联资源
-        task.resource_id = document.id
-        task.resource_type = "document"
-        db.commit()
-
-        logger.info(f"Document {document.id} generated successfully for task {task.id}")
-
-        return {
-            "document_id": document.id,
-            "title": title
-        }
-
-    def _extract_section_summary(self, section_title: str, html_content: str) -> dict:
-        """
-        从章节 HTML 内容中提取摘要，用于下一章的上下文
-        """
-        import re
-
-        # 移除 HTML 标签获取纯文本
-        text = re.sub(r'<[^>]+>', ' ', html_content)
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        # 提取前 300 字符作为摘要
-        summary_text = text[:300] if len(text) > 300 else text
-
-        # 尝试提取核心公式（如果有）
-        formulas = re.findall(r'\$\$(.*?)\$\$', html_content)
-        formula_summary = f"核心公式: {'; '.join(formulas[:2])}" if formulas else ""
-
-        return {
-            "title": section_title,
-            "content": summary_text,
-            "formulas": formula_summary
-        }
-
-    async def process_task(self, task_id: int):
-        """处理单个任务（在线程池中运行）"""
-        db = SessionLocal()
-        try:
-            task = db.query(TaskQueue).filter(TaskQueue.id == task_id).first()
-            if not task or task.status != TaskStatus.PENDING:
-                return
-            
-            # 更新为处理中
-            task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now()
-            db.commit()
-            
-            logger.info(f"Processing task {task_id}, type: {task.task_type}")
-            
-            # 获取处理器
-            handler = self._handlers.get(TaskType(task.task_type))
-            if not handler:
-                raise ValueError(f"Unknown task type: {task.task_type}")
-            
-            # 执行任务（在线程池中运行阻塞操作）
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: handler(db, task))
-            
-            # 更新为完成
-            task.status = TaskStatus.COMPLETED
-            task.completed_at = datetime.now()
-            task.set_result(result)
-            db.commit()
-            
-            logger.info(f"Task {task_id} completed successfully with result: {result}")
-            
-        except Exception as e:
-            logger.error(f"Task {task_id} failed: {e}")
-            task.status = TaskStatus.FAILED
-            task.error_message = str(e)
-            task.completed_at = datetime.now()
-            db.commit()
-        finally:
-            db.close()
+            log_context.info("文档保存到数据库", document_id=document.id)
+        
+        return document
     
     async def start_worker(self, worker_id: int):
         """启动工作线程"""
-        logger.info(f"Worker {worker_id} started")
-        while self._running:
+        logger.info(f"[Worker] {worker_id} 启动")
+        
+        while self._running and not self._shutdown_event.is_set():
             try:
                 db = SessionLocal()
                 try:
-                    # 获取待处理任务
                     pending_tasks = self.get_pending_tasks(db, limit=1)
                     
                     if pending_tasks:
                         task = pending_tasks[0]
+                        logger.info(f"[Worker {worker_id}] 获取任务 {task.id}")
                         await self.process_task(task.id)
                     else:
-                        # 没有任务，等待一段时间
-                        await asyncio.sleep(1)
+                        await asyncio.wait_for(
+                            self._shutdown_event.wait(),
+                            timeout=1.0
+                        )
+                        
+                except asyncio.TimeoutError:
+                    pass
                 finally:
                     db.close()
                     
             except Exception as e:
-                logger.error(f"Worker {worker_id} error: {e}")
+                logger.error(f"[Worker {worker_id}] 错误: {e}")
+                logger.error(traceback.format_exc())
                 await asyncio.sleep(5)
+        
+        logger.info(f"[Worker] {worker_id} 停止")
     
     async def start(self, num_workers: int = 2):
         """启动任务队列服务"""
@@ -666,14 +887,18 @@ class TaskQueueService:
             asyncio.create_task(self.start_worker(i))
             for i in range(num_workers)
         ]
-        logger.info(f"Task queue service started with {num_workers} workers")
+        logger.info(f"[Service] 任务队列服务启动，{num_workers} 个工作线程")
     
     async def stop(self):
         """停止任务队列服务"""
+        logger.info("[Service] 正在停止任务队列服务...")
         self._running = False
+        self._shutdown_event.set()
+        
         if self._workers:
             await asyncio.gather(*self._workers, return_exceptions=True)
-        logger.info("Task queue service stopped")
+        
+        logger.info("[Service] 任务队列服务已停止")
 
 
 # 全局任务队列服务实例

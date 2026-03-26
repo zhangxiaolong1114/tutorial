@@ -3,51 +3,48 @@
     <h1 class="text-2xl font-bold text-gray-900 mb-6">{{ $t('generate.title') }}</h1>
 
     <!-- 生成表单 -->
-    <div v-if="!currentTask" class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
-      <!-- 左侧：基本信息 -->
-      <div class="lg:col-span-2 space-y-6">
-        <div class="bg-white rounded-xl shadow-sm p-6">
-          <h2 class="text-lg font-semibold text-gray-900 mb-4">基本信息</h2>
-          
-          <form @submit.prevent="handleGenerate" class="space-y-6">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.courseName') }}</label>
-                <input v-model="form.course" type="text" required
-                  class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  :placeholder="$t('generate.coursePlaceholder')" />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.knowledgePoint') }}</label>
-                <input v-model="form.knowledge_point" type="text" required
-                  class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  :placeholder="$t('generate.knowledgePlaceholder')" />
-              </div>
-            </div>
+    <div v-if="!currentTask" class="flex flex-col gap-6 flex-1 min-h-0 overflow-hidden">
+      <!-- 上方：基本信息 -->
+      <div class="bg-white rounded-xl shadow-sm p-6 flex-shrink-0">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">基本信息</h2>
 
-            <div class="bg-blue-50 rounded-lg p-4">
-              <div class="flex items-center gap-2 text-blue-700 text-sm">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>难度等级和其他生成选项请在右侧配置面板中设置</span>
-              </div>
+        <form @submit.prevent="handleGenerate" class="space-y-6">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.courseName') }}</label>
+              <input v-model="form.course" type="text" required
+                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                :placeholder="$t('generate.coursePlaceholder')" />
             </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">{{ $t('generate.knowledgePoint') }}</label>
+              <input v-model="form.knowledge_point" type="text" required
+                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                :placeholder="$t('generate.knowledgePlaceholder')" />
+            </div>
+          </div>
 
-            <button type="submit" :disabled="isSubmitting"
-              class="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              {{ isSubmitting ? '提交中...' : $t('generate.generateButton') }}
-            </button>
-          </form>
-        </div>
+          <div class="bg-blue-50 rounded-lg p-4">
+            <div class="flex items-center gap-2 text-blue-700 text-sm">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>难度等级、生成选项和 AI 模型配置请在下方设置</span>
+            </div>
+          </div>
+
+          <button type="submit" :disabled="isSubmitting"
+            class="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {{ isSubmitting ? '提交中...' : $t('generate.generateButton') }}
+          </button>
+        </form>
       </div>
 
-      <!-- 右侧：生成配置 -->
-      <div class="lg:col-span-1 h-full overflow-hidden">
-        <GenerationConfigPanel
-          ref="configPanelRef"
-          @save="onConfigSave"
-        />
+      <!-- 下方：配置面板（并排） -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
+        <GenerationConfigPanel ref="configPanelRef" @save="onConfigSave" />
+        <ModelSelector ref="modelSelectorRef" @change="onModelChange" />
       </div>
     </div>
 
@@ -76,7 +73,7 @@
           <div class="bg-blue-600 h-2 rounded-full transition-all duration-500"
             :style="{ width: progressPercent + '%' }"></div>
         </div>
-        <p class="text-sm text-gray-500 mt-2">预计耗时 10-30 秒</p>
+        <p class="text-sm text-gray-500 mt-2">预计耗时 3-5 分钟</p>
       </div>
 
       <!-- 操作按钮 -->
@@ -103,8 +100,10 @@ import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { generateOutline, getTaskStatus } from '../api/outline'
 import GenerationConfigPanel from '../components/GenerationConfigPanel.vue'
+import ModelSelector from '../components/ModelSelector.vue'
 import type { TaskResponse, TaskStatusResponse } from '../types/outline'
 import type { GenerationConfigCreate } from '../types/generationConfig'
+import type { ModelConfig } from '../api/aiModels'
 
 const router = useRouter()
 const isSubmitting = ref(false)
@@ -112,6 +111,8 @@ const currentTask = ref<TaskStatusResponse | null>(null)
 const pollInterval = ref<number | null>(null)
 const progressPercent = ref(10)
 const configPanelRef = ref<InstanceType<typeof GenerationConfigPanel> | null>(null)
+const modelSelectorRef = ref<InstanceType<typeof ModelSelector> | null>(null)
+const modelConfig = ref<ModelConfig>({})
 
 const form = ref({
   course: '',
@@ -164,6 +165,15 @@ const onConfigSave = (config: GenerationConfigCreate) => {
   console.log('配置已保存:', config)
 }
 
+// 模型配置变化回调
+const onModelChange = (models: { outline: string; section: string; simulation: string }) => {
+  modelConfig.value = {
+    outline_model_id: models.outline || undefined,
+    section_model_id: models.section || undefined,
+    simulation_model_id: models.simulation || undefined
+  }
+}
+
 // 轮询任务状态
 const startPolling = (taskId: number) => {
   // 清除之前的轮询
@@ -209,30 +219,31 @@ const handleGenerate = async () => {
   try {
     // 获取当前配置
     const config = configPanelRef.value?.getConfig()
-    
+
     if (!config) {
       alert('无法获取配置信息')
       return
     }
-    
+
     // 自动保存配置
     const saveSuccess = await configPanelRef.value?.saveConfig()
     if (!saveSuccess) {
       console.warn('配置保存失败，继续生成...')
     }
-    
+
     // 构建请求数据
     const requestData: {
       course: string
       knowledge_point: string
       difficulty: 'easy' | 'medium' | 'hard'
       config?: GenerationConfigCreate
+      model_config?: ModelConfig
     } = {
       course: form.value.course,
       knowledge_point: form.value.knowledge_point,
       difficulty: 'medium'  // 默认难度，实际使用配置中的 difficulty
     }
-    
+
     // 添加配置到请求中，并使用配置中的难度
     requestData.config = config
     // 将配置中的 difficulty 映射到请求中的 difficulty（向后兼容）
@@ -242,7 +253,13 @@ const handleGenerate = async () => {
       'advanced': 'hard'
     }
     requestData.difficulty = difficultyMap[config.difficulty] || 'medium'
-    
+
+    // 添加模型配置
+    const modelConfigData = modelSelectorRef.value?.getModelConfig()
+    if (modelConfigData && (modelConfigData.outline_model_id || modelConfigData.section_model_id || modelConfigData.simulation_model_id)) {
+      requestData.model_config = modelConfigData
+    }
+
     const response: TaskResponse = await generateOutline(requestData)
 
     // 设置初始任务状态

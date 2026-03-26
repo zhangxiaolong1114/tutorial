@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-5xl mx-auto h-full flex flex-col overflow-y-auto pb-6">
+  <div class="max-w-6xl mx-auto h-full flex flex-col overflow-y-auto pb-6">
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-bold text-gray-900">编辑大纲</h1>
       <div class="flex gap-3">
@@ -11,7 +11,7 @@
           class="px-4 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50">
           {{ isSaving ? '保存中...' : '保存' }}
         </button>
-        <button @click="handleGenerateDocument" :disabled="isGenerating"
+        <button @click="showModelSelector = true" :disabled="isGenerating"
           class="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50">
           {{ isGenerating ? '提交中...' : '生成文档' }}
         </button>
@@ -48,7 +48,7 @@
           <div class="bg-blue-600 h-2 rounded-full transition-all duration-500"
             :style="{ width: progressPercent + '%' }"></div>
         </div>
-        <p class="text-xs text-blue-600 mt-1">预计耗时 5-10 分钟</p>
+        <p class="text-xs text-blue-600 mt-1">预计耗时 10-20 分钟</p>
       </div>
     </div>
 
@@ -66,6 +66,36 @@
         <div>
           <span class="text-gray-500">难度:</span>
           <span class="ml-2 font-medium">{{ difficultyText }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模型选择弹窗 -->
+    <div v-if="showModelSelector" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div class="p-6 border-b border-gray-200">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-900">选择 AI 模型</h3>
+            <button @click="showModelSelector = false" class="text-gray-400 hover:text-gray-600">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <p class="text-sm text-gray-500 mt-1">选择生成文档各章节使用的 AI 模型</p>
+        </div>
+        <div class="p-6 overflow-y-auto flex-1">
+          <ModelSelector ref="modelSelectorRef" />
+        </div>
+        <div class="p-6 border-t border-gray-200 flex justify-end gap-3">
+          <button @click="showModelSelector = false"
+            class="px-4 py-2 text-gray-700 font-medium rounded-lg hover:bg-gray-100 transition-colors">
+            取消
+          </button>
+          <button @click="confirmGenerateDocument"
+            class="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors">
+            开始生成
+          </button>
         </div>
       </div>
     </div>
@@ -116,7 +146,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getOutline, updateOutline, generateDocument, getTaskStatus } from '../api/outline'
+import ModelSelector from '../components/ModelSelector.vue'
 import type { Outline, Section, TaskStatusResponse } from '../types/outline'
+import type { ModelConfig } from '../api/aiModels'
 
 const route = useRoute()
 const outlineId = route.params.id as string
@@ -128,6 +160,8 @@ const isGenerating = ref(false)
 const currentTask = ref<TaskStatusResponse | null>(null)
 const pollInterval = ref<number | null>(null)
 const progressPercent = ref(10)
+const showModelSelector = ref(false)
+const modelSelectorRef = ref<InstanceType<typeof ModelSelector> | null>(null)
 
 const difficultyText = computed(() => {
   if (!outline.value) return ''
@@ -253,13 +287,17 @@ const startPolling = (taskId: number) => {
   }, 2000)
 }
 
-// 生成文档
-const handleGenerateDocument = async () => {
+// 确认生成文档（带模型选择）
+const confirmGenerateDocument = async () => {
+  showModelSelector.value = false
   await handleSave()
 
   isGenerating.value = true
   try {
-    const result = await generateDocument(outlineId)
+    // 获取模型配置
+    const modelConfig = modelSelectorRef.value?.getModelConfig()
+    
+    const result = await generateDocument(outlineId, modelConfig)
 
     currentTask.value = {
       task_id: result.task_id,
