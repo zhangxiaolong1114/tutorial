@@ -683,11 +683,11 @@ class TaskQueueService:
                         }
                     
                     if not has_error:
+                        # 将仿真代码用 iframe 包裹，实现沙箱隔离
+                        iframe_html = self._wrap_simulation_in_iframe(simulation_html, section_title)
                         wrapped_html = f'''<div class="section-content">
 <h3>{section_title}</h3>
-<div class="simulation-wrapper" style="border: 2px solid var(--primary-color); border-radius: 12px; padding: 20px; margin: 20px 0; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
-{simulation_html}
-</div>
+{iframe_html}
 </div>'''
                         return {
                             'html': f"<section id='{section_id}'>\n{wrapped_html}\n</section>",
@@ -817,6 +817,66 @@ class TaskQueueService:
             "content": summary_text,
             "formulas": formula_summary
         }
+    
+    def _wrap_simulation_in_iframe(self, simulation_html: str, section_title: str) -> str:
+        """
+        将仿真代码用 iframe 包裹，实现沙箱隔离
+        
+        Args:
+            simulation_html: 仿真 HTML 代码
+            section_title: 章节标题
+            
+        Returns:
+            包含 iframe 的 HTML 代码
+        """
+        import base64
+        
+        # 构建完整的 iframe 内容
+        iframe_content = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{section_title} - 仿真</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+        }}
+        .simulation-wrapper {{
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+    </style>
+</head>
+<body>
+    <div class="simulation-wrapper">
+        {simulation_html}
+    </div>
+</body>
+</html>'''
+        
+        # Base64 编码
+        encoded_content = base64.b64encode(iframe_content.encode('utf-8')).decode('utf-8')
+        
+        # 生成 iframe HTML
+        iframe_html = f'''<div class="simulation-iframe-wrapper" style="margin: 20px 0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+    <iframe 
+        src="data:text/html;base64,{encoded_content}" 
+        style="width: 100%; height: 600px; border: none; display: block;"
+        sandbox="allow-scripts allow-same-origin"
+        title="{section_title}"
+        loading="lazy"
+    ></iframe>
+</div>'''
+        
+        return iframe_html
     
     def _save_document(self, db: Session, task: TaskQueue, outline, title: str, 
                        full_html: str, generated_sections: list, log_context: TaskLogContext) -> "Document":
