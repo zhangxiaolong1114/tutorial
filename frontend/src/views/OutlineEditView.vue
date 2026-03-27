@@ -311,8 +311,14 @@ const confirmGenerateDocument = async () => {
       modelConfig.value = JSON.parse(JSON.stringify(modelConfigData))
     }
 
-    // console.log(modelConfig.value)
-    const result = await generateDocument(outlineId, modelConfig.value ? modelConfig.value : undefined)
+    // 检查 modelConfig 是否有实际内容
+    const hasModelConfig = modelConfig.value && (
+      modelConfig.value.outline_model_id || 
+      modelConfig.value.section_model_id || 
+      modelConfig.value.simulation_model_id
+    )
+    
+    const result = await generateDocument(outlineId, hasModelConfig ? modelConfig.value : undefined)
 
     currentTask.value = <any>{
       task_id: result.task_id,
