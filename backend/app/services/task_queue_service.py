@@ -616,45 +616,50 @@ class TaskQueueService:
                     # 仿真章节
                     simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
                     
-                    # 提取核心公式
-                    key_formulas = []
-                    if context and context.get("prev_summary"):
-                        prev_content = context["prev_summary"].get("content", "")
-                        import re
-                        formulas = re.findall(r'\$\$.*?\$\$', prev_content)
-                        if formulas:
-                            key_formulas.extend(formulas[:3])
+                    # 从当前章节获取关联信息
+                    current_section_meta = context.get("current_section_meta", {}) if context else {}
                     
+                    # 获取前后章节标题
+                    prev_title = None
+                    next_title = None
+                    if context and context.get("full_outline"):
+                        full_outline = context["full_outline"]
+                        current_idx = context.get("current_index", 0)
+                        if current_idx > 0:
+                            prev_title = full_outline[current_idx - 1].get("title")
+                        if current_idx < len(full_outline) - 1:
+                            next_title = full_outline[current_idx + 1].get("title")
+                    
+                    # 构建V2版本的仿真上下文
                     simulation_context = {
                         "prev_summary": context.get("prev_summary") if context else None,
+                        "prev_summaries": context.get("prev_summaries") if context else None,
                         "outline_structure": context.get("outline_structure") if context else None,
-                        "key_formulas": "\n".join(key_formulas) if key_formulas else None,
-                        "section_content": section_content if isinstance(section_content, list) else [str(section_content)]
+                        "full_outline": context.get("full_outline") if context else None,
+                        "current_index": context.get("current_index") if context else 0,
+                        "key_formulas": current_section_meta.get("key_formulas", []),
+                        "prerequisites": current_section_meta.get("prerequisites", []),
+                        "prepares_for": current_section_meta.get("prepares_for", []),
+                        "section_content": section_content if isinstance(section_content, list) else [str(section_content)],
+                        "section_title": section_title,
+                        "prev_section_title": prev_title,
+                        "next_section_title": next_title,
                     }
                     
-                    logger.info(f"[Task {task_id}] 开始生成仿真: {simulation_desc[:100]}")
+                    logger.info(f"[Task {task_id}] 开始生成仿真 (V2): {simulation_desc[:100]}")
                     
                     try:
-                        if config:
-                            simulation_html = ai_service.generate_simulation(
-                                simulation_desc=simulation_desc,
-                                course=outline.course,
-                                knowledge_point=outline.knowledge_point,
-                                simulation_types=config.get('simulation_types', ['animation']),
-                                config=config,
-                                task_id=task_id,
-                                context=simulation_context,
-                                model_id=simulation_model_id,
-                            )
-                        else:
-                            simulation_html = ai_service.generate_simulation(
-                                simulation_desc=simulation_desc,
-                                course=outline.course,
-                                knowledge_point=outline.knowledge_point,
-                                config={},
-                                task_id=task_id,
-                                model_id=simulation_model_id,
-                            )
+                        simulation_html = ai_service.generate_simulation(
+                            simulation_desc=simulation_desc,
+                            course=outline.course,
+                            knowledge_point=outline.knowledge_point,
+                            simulation_types=config.get('simulation_types', ['animation']) if config else ['animation'],
+                            config=config or {},
+                            task_id=task_id,
+                            context=simulation_context,
+                            model_id=simulation_model_id,
+                            use_v2=True,  # 使用V2版本
+                        )
                         
                         logger.info(f"[Task {task_id}] 仿真生成完成, HTML长度: {len(simulation_html)}")
                         

@@ -22,6 +22,10 @@ from app.core.simulation_prompts import (
     build_simulation_prompt_structure,
     build_simulation_prompt_logic,
 )
+from app.services.simulation_generator import (
+    generate_simulation_v2,
+    SimulationGenerationError,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -331,13 +335,22 @@ class AIService:
         task_config: Optional[TaskModelConfig] = None,
         context: dict = None,
         use_chunked: bool = True,
+        use_v2: bool = True,  # 新增：使用V2版本
     ) -> str:
         """
         生成交互仿真代码
         
         Args:
             use_chunked: 是否使用分块生成（默认True，更快更稳定）
+            use_v2: 是否使用V2版本（默认True，需求优先的Prompt）
         """
+        # 优先使用V2版本
+        if use_v2 and context:
+            return self._generate_simulation_v2(
+                simulation_desc, course, knowledge_point,
+                config, task_id, model_id, task_config, context
+            )
+        
         if use_chunked:
             return self._generate_simulation_chunked(
                 simulation_desc, course, knowledge_point, 
@@ -348,6 +361,80 @@ class AIService:
                 simulation_desc, course, knowledge_point,
                 simulation_types, config, task_id, model_id, task_config, context
             )
+    
+    def _generate_simulation_v2(
+        self,
+        simulation_desc: str,
+        course: str,
+        knowledge_point: str,
+        config: dict,
+        task_id: str,
+        model_id: Optional[str],
+        task_config: Optional[TaskModelConfig],
+        context: dict,
+    ) -> str:
+        """
+        使用V2版本生成仿真（需求优先 + 续生成机制）
+        """
+        logger.info(f"[Simulation V2] Task {task_id} - 开始生成")
+        
+        # 构建V2版本的context
+        v2_context = {
+            "course": course,
+            "knowledge_point": knowledge_point,
+            "description": simulation_desc,
+            "core_formulas": context.get("key_formulas", []) if isinstance(context.get("key_formulas"), list) else [context.get("key_formulas", "")],
+            "prerequisites": context.get("prerequisites", []),
+            "prepares_for": context.get("prepares_for", []),
+            "prev_section_title": context.get("prev_section_title", ""),
+            "next_section_title": context.get("next_section_title", ""),
+            "section_title": context.get("section_title", ""),
+        }
+        
+        try:
+            result = generate_simulation_v2(
+                context=v2_context,
+                model_id=model_id,
+                task_config=task_config,
+                task_id=task_id
+            )
+            
+            if result["success"]:
+                logger.info(f"[Simulation V2] Task {task_id} - 生成成功，尝试{result['attempts']}次，续生成{result['continues']}次")
+                return result["content"]
+            else:
+                # 生成失败，返回包含错误信息的占位符
+                error_msg = result.get("error", "未知错误")
+                outline_req = result.get("outline_requirement", simulation_desc)
+                
+                logger.error(f"[Simulation V2] Task {task_id} - 生成失败: {error_msg}")
+                
+                error_html = f'''<div class="simulation-error" style="border: 2px solid #dc2626; padding: 20px; background: #fef2f2; border-radius: 8px;">
+    <h3 style="color: #dc2626; margin-top: 0;">⚠️ 仿真生成失败</h3>
+    <p><strong>错误信息：</strong>{error_msg}</p>
+    <p><strong>课程：</strong>{course}</p>
+    <p><strong>知识点：</strong>{knowledge_point}</p>
+    <div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 4px;">
+        <p style="margin: 0; font-weight: bold;">大纲需求（供手动实现参考）：</p>
+        <p style="margin: 5px 0 0 0; white-space: pre-wrap;">{outline_req}</p>
+    </div>
+</div>'''
+                return error_html
+                
+        except Exception as e:
+            logger.error(f"[Simulation V2] Task {task_id} - 异常: {e}")
+            # 返回错误占位符
+            error_html = f'''<div class="simulation-error" style="border: 2px solid #dc2626; padding: 20px; background: #fef2f2; border-radius: 8px;">
+    <h3 style="color: #dc2626; margin-top: 0;">⚠️ 仿真生成异常</h3>
+    <p><strong>错误信息：</strong>{str(e)}</p>
+    <p><strong>课程：</strong>{course}</p>
+    <p><strong>知识点：</strong>{knowledge_point}</p>
+    <div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 4px;">
+        <p style="margin: 0; font-weight: bold;">大纲需求（供手动实现参考）：</p>
+        <p style="margin: 5px 0 0 0; white-space: pre-wrap;">{simulation_desc}</p>
+    </div>
+</div>'''
+            return error_html
     
     def _generate_simulation_chunked(
         self,
