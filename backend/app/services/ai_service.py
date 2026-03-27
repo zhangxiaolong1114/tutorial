@@ -885,6 +885,7 @@ class AIService:
         问题：
         1. AI 生成的公式可能包含未转义的特殊字符
         2. 某些 KaTeX 命令可能需要特殊处理
+        3. 公式嵌套（$$ 内部有 $）
         """
         import re
         
@@ -898,6 +899,16 @@ class AIService:
         
         for pattern, replacement in fixes:
             html = re.sub(pattern, replacement, html)
+        
+        # 修复公式嵌套问题：$$...$...$$ -> $$...\text{...}...$$
+        # 在 display 模式 ($$...$$) 内部，将 $ 替换为 \text{}
+        def fix_nested_dollars(match):
+            content = match.group(1)
+            # 将内部的 $...$ 替换为 \text{...}
+            content = re.sub(r'\$([^$]+)\$', r'\\text{\1}', content)
+            return f'$${content}$$'
+        
+        html = re.sub(r'\$\$([^$]+)\$\$', fix_nested_dollars, html)
         
         return html
     
@@ -924,21 +935,14 @@ class AIService:
                             delimiters: [
                                 {{left: '$$$$', right: '$$$$', display: true}},
                                 {{left: '$$', right: '$$', display: true}},
-                                {{left: '$', right: '$', display: false}},
-                                {{left: '\\[', right: '\\]', display: true}},
-                                {{left: '\\(', right: '\\)', display: false}}
+                                {{left: '$', right: '$', display: false}}
                             ],
                             throwOnError: false,
                             strict: false,
                             trust: true,
                             errorColor: '#dc2626',
                             minRuleThickness: 0.05,
-                            maxExpand: 1000,
-                            macros: {{
-                                "\\vec": "\\mathbf",
-                                "\\R": "\\mathbb{{R}}",
-                                "\\C": "\\mathbb{{C}}"
-                            }},
+                            maxExpand: 5000,
                             // 添加错误处理
                             errorCallback: function(msg, err) {{
                                 console.warn('[KaTeX] 渲染警告:', msg);
