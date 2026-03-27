@@ -91,7 +91,7 @@ class TaskQueueService:
         db.commit()
         db.refresh(task)
         
-        logger.info(f"[Task] 创建任务 {task.id} (用户 {user_id}, 类型 {task_type})")
+        logger.info(f"[Task] 创建任务 {task.id} (用户 {user_id}, 类型 {task_type}, 参数 {params})")
         return task
     
     def get_task(self, db: Session, task_id: int, user_id: int) -> Optional[TaskQueue]:
@@ -270,6 +270,7 @@ class TaskQueueService:
         
         # 获取模型配置
         model_config = params.get("model_config", {})
+        log_context.warning(f"model_config: {model_config}")
         outline_model_id = model_config.get("outline_model_id")
         
         # 记录使用的模型
@@ -388,7 +389,7 @@ class TaskQueueService:
         # 获取配置
         config = params.get("config") or outline_data.get("config")
         model_config = params.get("model_config", {})
-        
+        log_context.warning(f"model_config: {model_config}")
         logger.info(f"[Task {task.id}] 文档生成参数: params keys={list(params.keys())}, model_config={model_config}")
         
         # 获取模型配置
@@ -423,6 +424,7 @@ class TaskQueueService:
         html_contents = []
         generated_sections = []
         prev_section_summary = None
+        prev_summaries = []  # 存储最近2章的摘要
         
         for section_index, section in enumerate(sections):
             section_id = section.get("id", "")
@@ -444,15 +446,28 @@ class TaskQueueService:
                            section_id=section_id,
                            section_title=section_title)
             
-            # 构建上下文
+            # 构建上下文（增强版 - 支持完整大纲和章节关联信息）
+            current_section = sections[section_index]
             context = {
-                "outline_structure": outline_structure,
+                # 完整大纲结构（用于全局定位）
+                "full_outline": sections,
+                "current_index": section_index,
                 "position": {
                     "current_index": section_index,
                     "total": len(sections),
                     "prev_title": sections[section_index - 1].get("title") if section_index > 0 else None,
                     "next_title": sections[section_index + 1].get("title") if section_index < len(sections) - 1 else None
                 },
+                # 当前章节的关联信息（从大纲中获取）
+                "current_section_meta": {
+                    "prerequisites": current_section.get("prerequisites", []),
+                    "prepares_for": current_section.get("prepares_for", []),
+                    "key_formulas": current_section.get("key_formulas", [])
+                },
+                # 前置章节摘要（最近2章，每章800字符）
+                "prev_summaries": prev_summaries if 'prev_summaries' in locals() else ([prev_section_summary] if prev_section_summary else []),
+                # 保留旧字段兼容性
+                "outline_structure": outline_structure,
                 "prev_summary": prev_section_summary,
                 "generated_sections": "\n".join([
                     f"- {s.get('title')}" for s in sections[:section_index]
@@ -486,6 +501,10 @@ class TaskQueueService:
                 
                 if section_result['meta']['generated']:
                     prev_section_summary = self._extract_section_summary(section_title, section_result['content'])
+                    # 维护最近2章的摘要列表
+                    prev_summaries.insert(0, prev_section_summary)
+                    if len(prev_summaries) > 2:
+                        prev_summaries.pop()
                     log_context.info(f"章节 {section_id} 生成成功", model_used=model_used)
                 else:
                     prev_section_summary = {

@@ -1098,11 +1098,32 @@ def build_outline_prompt(course: str, knowledge_point: str, config: dict) -> str
             "id": "章节标识",
             "title": "章节标题",
             "content": ["具体要点1", "具体要点2", ...],
-            "order": 1
+            "order": 1,
+            "prerequisites": ["需要前文已讲解的概念1", "概念2"],
+            "prepares_for": ["为后文铺垫的概念1", "概念2"],
+            "key_formulas": ["核心公式1", "公式2"]
         }},
         ...更多章节
     ]
 }}
+
+## 章节关联信息要求
+每个章节必须包含以下关联信息，用于保证文档连贯性：
+
+### prerequisites（前置依赖）
+- 列出本章需要依赖的前置知识
+- 这些概念必须在前面的章节中已经讲解
+- 示例：["导数的定义", "极限的概念"]
+
+### prepares_for（后续铺垫）
+- 列出本章需要为后续章节铺垫的关键概念
+- 这些概念在本章打好基础，但不要提前展开
+- 示例：["泰勒展开的应用", "高阶导数"]
+
+### key_formulas（核心公式）
+- 列出本章必须出现的核心公式（用 LaTeX 格式）
+- 这些公式将在后续章节中被引用
+- 示例：["$f'(x) = \\lim_{{h\\to 0}} \\frac{{f(x+h)-f(x)}}{{h}}$"]
 
 ## 重要规则
 - content 必须是字符串数组，每个元素是具体的教学内容描述
@@ -1156,39 +1177,65 @@ def build_section_prompt(
     # 1. 角色定义
     parts.append(get_persona(tone, target_audience))
     
-    # 2. 上下文信息（新增）
+    # 2. 上下文信息（增强版 - 选项B：信息分层）
     if context:
         context_parts = ["## 文档上下文"]
         
-        # 大纲结构
-        if context.get("outline_structure"):
-            context_parts.append(f"""### 文档整体结构
+        # 完整大纲结构（仅标题，用于全局定位）
+        if context.get("full_outline"):
+            outline_summary = []
+            for i, sec in enumerate(context['full_outline'], 1):
+                current_marker = " <- 当前章节" if i == context.get('current_index', 0) + 1 else ""
+                status = "[已生成]" if i < context.get('current_index', 0) + 1 else "[待生成]"
+                outline_summary.append(f"{i}. {sec.get('title', '未命名')}{current_marker} {status}")
+            
+            outline_summary_str = "\n".join(outline_summary)
+            context_parts.append(f"""### 完整文档结构
 本章节是《{course} - {knowledge_point}》教学文档的一部分。
-大纲结构：
-{context['outline_structure']}""")
+
+{outline_summary_str}""")
+        
+        # 当前章节的关联信息（详细展开）
+        if context.get("current_section_meta"):
+            meta = context['current_section_meta']
+            meta_parts = ["### 本章节关联信息"]
+            
+            if meta.get('prerequisites'):
+                prereqs = "\n".join([f"- {p}" for p in meta['prerequisites']])
+                meta_parts.append(f"""**前置依赖**（这些概念必须在本章之前已讲解）：
+{prereqs}""")
+            
+            if meta.get('prepares_for'):
+                prepares = "\n".join([f"- {p}" for p in meta['prepares_for']])
+                meta_parts.append(f"""**后续铺垫**（为这些后文概念打好基础）：
+{prepares}""")
+            
+            if meta.get('key_formulas'):
+                formulas = "\n".join([f"- {f}" for f in meta['key_formulas']])
+                meta_parts.append(f"""**核心公式**（本章必须出现）：
+{formulas}""")
+            
+            context_parts.append("\n\n".join(meta_parts))
         
         # 前后章节关系
         if context.get("position"):
-            pos = context["position"]
-            context_parts.append(f"""### 本章节位置
+            pos = context['position']
+            context_parts.append(f"""### 位置信息
 - 当前章节：第 {pos['current_index'] + 1} 章，共 {pos['total']} 章
-- 章节标题：{section_title}
-- 前一章：{pos.get('prev_title', '无')}（已生成）
-- 后一章：{pos.get('next_title', '无')}（待生成）""")
+- 前一章：{pos.get('prev_title', '无')}
+- 后一章：{pos.get('next_title', '无')}""")
         
-        # 前一章摘要
-        if context.get("prev_summary"):
-            prev_title = context['prev_summary'].get('title', '前一章')
-            prev_content = context['prev_summary'].get('content', '')
-            # 提取前一章的核心概念（前200字符）
-            prev_essence = prev_content[:200] + "..." if len(prev_content) > 200 else prev_content
-            context_parts.append(f"""### 前置知识
+        # 前置章节详细摘要（最近2章）
+        if context.get("prev_summaries"):
+            prev_parts = ["### 前置章节摘要"]
+            for idx, prev in enumerate(context['prev_summaries'][:2], 1):
+                prev_title = prev.get('title', f'第{idx}章')
+                prev_content = prev.get('content', '')
+                # 增加到800字符，保留更多关键信息
+                prev_essence = prev_content[:800] + "..." if len(prev_content) > 800 else prev_content
+                prev_parts.append(f"""**{prev_title}**：
 {prev_essence}""")
-        
-        # 已生成章节列表
-        if context.get("generated_sections"):
-            context_parts.append(f"""### 已生成章节
-{context['generated_sections']}""")
+            context_parts.append("\n\n".join(prev_parts))
         
         parts.append("\n\n".join(context_parts))
     
@@ -1199,11 +1246,24 @@ def build_section_prompt(
 ## 需要覆盖的核心内容
 {key_points_str}""")
     
-    # 4. 连贯性要求（简化）
-    if context and context.get("prev_summary"):
-        parts.append("""## 写作提示
-- 保持术语和符号体系与前置章节一致
-- 内容应自然延续前置知识，无需刻意提及章节名称""")
+    # 4. 连贯性要求（增强）
+    if context:
+        coherence_parts = ["## 连贯性要求"]
+        
+        if context.get("current_section_meta", {}).get("prerequisites"):
+            coherence_parts.append("- 确保前置依赖中的概念已经在前文充分讲解，本章可以直接引用")
+        
+        if context.get("current_section_meta", {}).get("prepares_for"):
+            prepares = ", ".join(context['current_section_meta']['prepares_for'])
+            coherence_parts.append(f"- 为后续章节铺垫：{prepares}。打好基础但不要提前展开")
+        
+        if context.get("current_section_meta", {}).get("key_formulas"):
+            coherence_parts.append("- 核心公式必须在本章出现，并确保与前后章节的公式体系一致")
+        
+        coherence_parts.append("- 保持术语和符号体系与前置章节一致")
+        coherence_parts.append("- 内容应自然延续前置知识，避免生硬衔接")
+        
+        parts.append("\n".join(coherence_parts))
     
     # 5. 结构指令
     parts.append(f"## 内容组织方式\n{get_content_structure(teaching_style)}")
