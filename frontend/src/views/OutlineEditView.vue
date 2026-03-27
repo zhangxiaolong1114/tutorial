@@ -222,7 +222,16 @@ const loadOutline = async () => {
       content: Array.isArray(s.content) ? s.content.join('\n') : s.content,
       prerequisites: Array.isArray(s.prerequisites) ? s.prerequisites.join('\n') : s.prerequisites || '',
       prepares_for: Array.isArray(s.prepares_for) ? s.prepares_for.join('\n') : s.prepares_for || '',
-      key_formulas: Array.isArray(s.key_formulas) ? s.key_formulas.join('\n') : s.key_formulas || ''
+      // key_formulas 可能是对象数组（包含 formula 和 used_in）或字符串数组
+      key_formulas: Array.isArray(s.key_formulas) 
+        ? s.key_formulas.map(item => {
+            if (typeof item === 'object' && item !== null) {
+              // 如果是对象，提取 formula 字段
+              return item.formula || JSON.stringify(item)
+            }
+            return item
+          }).join('\n')
+        : s.key_formulas || ''
     }))
   } catch (error) {
     console.error('加载大纲失败:', error)
