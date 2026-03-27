@@ -121,11 +121,15 @@ class TaskQueueService:
         # 同时获取卡住的任务（处理中但超时）
         timeout_threshold = datetime.now() - timedelta(hours=1)
         
+        # 使用 FOR UPDATE 锁定任务，防止多个 worker 同时获取同一任务
+        from sqlalchemy import or_
         return db.query(TaskQueue).filter(
-            (TaskQueue.status == TaskStatus.PENDING) |
-            ((TaskQueue.status == TaskStatus.PROCESSING) & 
-             (TaskQueue.started_at < timeout_threshold))
-        ).order_by(TaskQueue.created_at.asc()).limit(limit).all()
+            or_(
+                TaskQueue.status == TaskStatus.PENDING,
+                (TaskQueue.status == TaskStatus.PROCESSING) & 
+                (TaskQueue.started_at < timeout_threshold)
+            )
+        ).order_by(TaskQueue.created_at.asc()).limit(limit).with_for_update(skip_locked=True).all()
     
     async def process_task(self, task_id: int):
         """处理单个任务（带完整日志和异常处理）"""
