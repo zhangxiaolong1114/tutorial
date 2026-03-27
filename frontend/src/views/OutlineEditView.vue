@@ -295,9 +295,17 @@ const confirmGenerateDocument = async () => {
   isGenerating.value = true
   try {
     // 获取模型配置
-    const modelConfig = modelSelectorRef.value?.getModelConfig()
-
-    const result = await generateDocument(outlineId, modelConfig)
+    const modelConfigData = modelSelectorRef.value?.getModelConfig()
+    console.log('模型配置:', modelConfigData)
+    
+    // 只有当有实际选择的模型时才传递配置
+    const hasModelSelected = modelConfigData && (
+      modelConfigData.outline_model_id || 
+      modelConfigData.section_model_id || 
+      modelConfigData.simulation_model_id
+    )
+    
+    const result = await generateDocument(outlineId, hasModelSelected ? modelConfigData : undefined)
 
     currentTask.value = {
       task_id: result.task_id,
