@@ -250,6 +250,24 @@ def simple_validate_simulation(html: str) -> Tuple[bool, List[str]]:
     return len(errors) == 0, errors
 
 
+def clean_simulation_code(html: str) -> str:
+    """
+    清理仿真代码中的 markdown 标记
+    
+    移除 ```html, ``` 等代码块标记
+    """
+    import re
+    
+    # 移除开头的 ```html 或 ```
+    html = re.sub(r'^\s*```html\s*', '', html, flags=re.IGNORECASE)
+    html = re.sub(r'^\s*```\s*', '', html)
+    
+    # 移除结尾的 ```
+    html = re.sub(r'\s*```\s*$', '', html)
+    
+    return html.strip()
+
+
 def has_basic_structure(html: str) -> bool:
     """检查是否已生成基本可用结构（用于流式接收时判断）"""
     return (
@@ -306,6 +324,9 @@ class SimulationGenerator:
                 
                 content = result["content"]
                 continues = result["continues"]
+                
+                # 清理 markdown 代码块标记
+                content = clean_simulation_code(content)
                 
                 # 验证
                 is_valid, errors = simple_validate_simulation(content)

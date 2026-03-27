@@ -380,18 +380,18 @@ UNIFORM_CONSTRAINTS = """【输出格式强制要求】
 
 2. 公式格式（KaTeX 兼容）：
    - 行内公式：$...$ （如：$E=mc^2$）
-   - 块级公式：$$...$$ （如：$$\\sum_{{i=1}}^n x_i$$）
+   - 块级公式：$$...$$ （如：$$\sum_{i=1}^n x_i$$）
    - 支持的复杂公式：
-     * 分式：$\\frac{{a}}{{b}}$
+     * 分式：$\frac{a}{b}$
      * 上下标：$x_i$, $x^2$, $x_i^j$
-     * 根号：$\\sqrt{{x}}$, $\\sqrt[n]{{x}}$
-     * 求和/积分：$\\sum_{{i=1}}^n$, $\\int_0^\\infty$
-     * 希腊字母：$\\alpha$, $\\beta$, $\\gamma$, $\\Gamma$, $\\pi$, $\\Omega$ 等
-     * 矩阵：使用 $$\\begin{{matrix}}...\\end{{matrix}}$$
-     * 多行对齐：使用 $$\\begin{{aligned}}...\\end{{aligned}}$$
-     * 分段函数：使用 $$\\begin{{cases}}...\\end{{cases}}$$
-   - 禁止：\\( \\), \\[ \\], \\begin{{equation}}, $$$$ 等其他格式
-   - 注意：所有反斜杠必须转义为 \\\\ 在 Python 字符串中
+     * 根号：$\sqrt{x}$, $\sqrt[n]{x}$
+     * 求和/积分：$\sum_{i=1}^n$, $\int_0^\infty$
+     * 希腊字母：$\alpha$, $\\beta$, $\gamma$, $\Gamma$, $\pi$, $\Omega$ 等
+     * 矩阵：使用 $$\begin{matrix}...\end{matrix}$$
+     * 多行对齐：使用 $$\begin{aligned}...\end{aligned}$$
+     * 分段函数：使用 $$\begin{cases}...\end{cases}$$
+   - 禁止：\( \), \[ \], \begin{equation}, $$$$ 等其他格式
+   - 重要：公式中的命令使用单反斜杠，如 \frac, \sum, \alpha（不要在AI输出中双重转义）
 
 3. 特殊区块：
    - 教授提示：<div class="tip">...</div>

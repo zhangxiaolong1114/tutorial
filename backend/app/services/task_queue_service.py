@@ -613,11 +613,17 @@ class TaskQueueService:
         for attempt in range(max_retries + 1):
             try:
                 if is_simulation:
-                    # 仿真章节
-                    simulation_desc = section_content[0] if isinstance(section_content, list) and section_content else str(section_content)
+                    # 仿真章节 - 使用完整的章节内容
+                    # 合并所有要点作为完整的仿真需求
+                    if isinstance(section_content, list) and len(section_content) > 0:
+                        simulation_desc = "\n".join(section_content)
+                    else:
+                        simulation_desc = str(section_content)
                     
-                    # 从当前章节获取关联信息
-                    current_section_meta = context.get("current_section_meta", {}) if context else {}
+                    # 从当前章节获取关联信息（直接从section获取，确保完整）
+                    key_formulas = section.get("key_formulas", []) if isinstance(section, dict) else []
+                    prerequisites = section.get("prerequisites", []) if isinstance(section, dict) else []
+                    prepares_for = section.get("prepares_for", []) if isinstance(section, dict) else []
                     
                     # 获取前后章节标题
                     prev_title = None
@@ -630,20 +636,29 @@ class TaskQueueService:
                         if current_idx < len(full_outline) - 1:
                             next_title = full_outline[current_idx + 1].get("title")
                     
-                    # 构建V2版本的仿真上下文
+                    # 构建V2版本的仿真上下文 - 包含完整的章节信息
                     simulation_context = {
                         "prev_summary": context.get("prev_summary") if context else None,
                         "prev_summaries": context.get("prev_summaries") if context else None,
                         "outline_structure": context.get("outline_structure") if context else None,
                         "full_outline": context.get("full_outline") if context else None,
                         "current_index": context.get("current_index") if context else 0,
-                        "key_formulas": current_section_meta.get("key_formulas", []),
-                        "prerequisites": current_section_meta.get("prerequisites", []),
-                        "prepares_for": current_section_meta.get("prepares_for", []),
+                        "key_formulas": key_formulas,
+                        "prerequisites": prerequisites,
+                        "prepares_for": prepares_for,
                         "section_content": section_content if isinstance(section_content, list) else [str(section_content)],
                         "section_title": section_title,
                         "prev_section_title": prev_title,
                         "next_section_title": next_title,
+                        # 添加完整的当前章节信息
+                        "current_section_full": {
+                            "id": section_id,
+                            "title": section_title,
+                            "content": section_content,
+                            "prerequisites": prerequisites,
+                            "prepares_for": prepares_for,
+                            "key_formulas": key_formulas
+                        }
                     }
                     
                     logger.info(f"[Task {task_id}] 开始生成仿真 (V2): {simulation_desc[:100]}")
@@ -721,7 +736,20 @@ class TaskQueueService:
                         }
                 
                 else:
-                    # 普通章节
+                    # 普通章节 - 传递完整的章节信息
+                    # 构建包含完整章节信息的上下文
+                    section_context = {
+                        **context,
+                        "current_section_full": {
+                            "id": section_id,
+                            "title": section_title,
+                            "content": section_content,
+                            "prerequisites": section.get("prerequisites", []),
+                            "prepares_for": section.get("prepares_for", []),
+                            "key_formulas": section.get("key_formulas", [])
+                        }
+                    }
+                    
                     if config:
                         html_content = ai_service.generate_section(
                             section_title=section_title,
@@ -731,7 +759,7 @@ class TaskQueueService:
                             config=config,
                             task_id=task_id,
                             model_id=section_model_id,
-                            context=context,
+                            context=section_context,
                         )
                     else:
                         html_content = ai_service.generate_section(
@@ -742,7 +770,7 @@ class TaskQueueService:
                             config={},
                             task_id=task_id,
                             model_id=section_model_id,
-                            context=context,
+                            context=section_context,
                         )
                     
                     has_error = '内容生成失败' in html_content
