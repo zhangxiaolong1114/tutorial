@@ -307,17 +307,31 @@ const confirmGenerateDocument = async () => {
   try {
     // 获取模型配置
     const modelConfigData = modelSelectorRef.value?.getModelConfig()
-    if (modelConfigData && (modelConfigData.outline_model_id || modelConfigData.section_model_id || modelConfigData.simulation_model_id)) {
+    console.log('从 ModelSelector 获取的配置:', modelConfigData)
+    
+    // 检查是否有选择的模型
+    const hasSelectedModel = modelConfigData && (
+      modelConfigData.outline_model_id || 
+      modelConfigData.section_model_id || 
+      modelConfigData.simulation_model_id
+    )
+    
+    if (hasSelectedModel) {
       modelConfig.value = JSON.parse(JSON.stringify(modelConfigData))
+      console.log('更新后的 modelConfig:', modelConfig.value)
+    } else {
+      console.log('没有选择模型，使用默认配置')
+      modelConfig.value = {}
     }
 
-    // 检查 modelConfig 是否有实际内容
+    // 再次检查 modelConfig 是否有实际内容
     const hasModelConfig = modelConfig.value && (
       modelConfig.value.outline_model_id || 
       modelConfig.value.section_model_id || 
       modelConfig.value.simulation_model_id
     )
     
+    console.log('最终传递的配置:', hasModelConfig ? modelConfig.value : undefined)
     const result = await generateDocument(outlineId, hasModelConfig ? modelConfig.value : undefined)
 
     currentTask.value = <any>{

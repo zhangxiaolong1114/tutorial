@@ -19,7 +19,12 @@ export const updateOutline = async (id: string, data: UpdateOutlineRequest): Pro
 
 // 生成文档（异步）
 export const generateDocument = async (id: string, modelConfig?: ModelConfig): Promise<TaskResponse> => {
-  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, { ai_model_config: modelConfig })
+  const requestData: any = {}
+  // 只有当 modelConfig 有实际内容时才添加
+  if (modelConfig && (modelConfig.outline_model_id || modelConfig.section_model_id || modelConfig.simulation_model_id)) {
+    requestData.ai_model_config = modelConfig
+  }
+  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, requestData)
 }
 
 // 获取任务状态
