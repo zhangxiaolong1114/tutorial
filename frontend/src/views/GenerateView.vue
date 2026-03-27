@@ -237,7 +237,7 @@ const handleGenerate = async () => {
       knowledge_point: string
       difficulty: 'easy' | 'medium' | 'hard'
       config?: GenerationConfigCreate
-      model_config?: ModelConfig
+      ai_model_config?: ModelConfig
     } = {
       course: form.value.course,
       knowledge_point: form.value.knowledge_point,
@@ -257,7 +257,7 @@ const handleGenerate = async () => {
     // 添加模型配置
     const modelConfigData = modelSelectorRef.value?.getModelConfig()
     if (modelConfigData && (modelConfigData.outline_model_id || modelConfigData.section_model_id || modelConfigData.simulation_model_id)) {
-      requestData.model_config = modelConfigData
+      requestData.ai_model_config = modelConfigData
     }
 
     const response: TaskResponse = await generateOutline(requestData)

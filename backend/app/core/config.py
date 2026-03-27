@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     
     # 智谱 GLM API 配置
     GLM_API_KEY: str = ""
-    GLM_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+    GLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     
     # Claude API 配置（已废弃，保留兼容性）
     CLAUDE_API_KEY: str = ""

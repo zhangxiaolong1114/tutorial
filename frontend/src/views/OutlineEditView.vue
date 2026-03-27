@@ -85,7 +85,7 @@
           <p class="text-sm text-gray-500 mt-1">选择生成文档各章节使用的 AI 模型</p>
         </div>
         <div class="p-6 overflow-y-auto flex-1">
-          <ModelSelector ref="modelSelectorRef" />
+          <ModelSelector ref="modelSelectorRef" @change="onModelChange" />
         </div>
         <div class="p-6 border-t border-gray-200 flex justify-end gap-3">
           <button @click="showModelSelector = false"
@@ -162,6 +162,7 @@ const pollInterval = ref<number | null>(null)
 const progressPercent = ref(10)
 const showModelSelector = ref(false)
 const modelSelectorRef = ref<InstanceType<typeof ModelSelector> | null>(null)
+const modelConfig = ref<ModelConfig>({})
 
 const difficultyText = computed(() => {
   if (!outline.value) return ''
@@ -287,6 +288,16 @@ const startPolling = (taskId: number) => {
   }, 2000)
 }
 
+// 模型配置变化回调
+const onModelChange = () => {
+  console.log("change")
+  const modelConfigData = modelSelectorRef.value?.getModelConfig()
+  if (modelConfigData && (modelConfigData.outline_model_id || modelConfigData.section_model_id || modelConfigData.simulation_model_id)) {
+    modelConfig.value = modelConfigData
+  }
+  console.log(modelConfig.value)
+}
+
 // 确认生成文档（带模型选择）
 const confirmGenerateDocument = async () => {
   showModelSelector.value = false
@@ -296,18 +307,14 @@ const confirmGenerateDocument = async () => {
   try {
     // 获取模型配置
     const modelConfigData = modelSelectorRef.value?.getModelConfig()
-    console.log('模型配置:', modelConfigData)
-    
-    // 只有当有实际选择的模型时才传递配置
-    const hasModelSelected = modelConfigData && (
-      modelConfigData.outline_model_id || 
-      modelConfigData.section_model_id || 
-      modelConfigData.simulation_model_id
-    )
-    
-    const result = await generateDocument(outlineId, hasModelSelected ? modelConfigData : undefined)
+    if (modelConfigData && (modelConfigData.outline_model_id || modelConfigData.section_model_id || modelConfigData.simulation_model_id)) {
+      modelConfig.value = JSON.parse(JSON.stringify(modelConfigData))
+    }
 
-    currentTask.value = {
+    // console.log(modelConfig.value)
+    const result = await generateDocument(outlineId, modelConfig.value ? modelConfig.value : undefined)
+
+    currentTask.value = <any>{
       task_id: result.task_id,
       status: 'pending',
       task_type: 'generate_document',

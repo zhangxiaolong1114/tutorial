@@ -12,6 +12,8 @@ pip-delete-this-directory.txt
 *.db
 *.sqlite3
 logs/
+backend/.service.log
+backend/.service.pid
 
 # Node
 node_modules/

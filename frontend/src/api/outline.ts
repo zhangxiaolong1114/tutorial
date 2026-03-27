@@ -19,7 +19,7 @@ export const updateOutline = async (id: string, data: UpdateOutlineRequest): Pro
 
 // 生成文档（异步）
 export const generateDocument = async (id: string, modelConfig?: ModelConfig): Promise<TaskResponse> => {
-  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, { model_config: modelConfig })
+  return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, { ai_model_config: modelConfig })
 }
 
 // 获取任务状态

@@ -20,8 +20,10 @@ from app.models.task_queue import TaskQueue, TaskStatus, TaskType
 from app.services.task_queue_service import task_queue_service
 from app.services.ai_service import ai_service
 
-router = APIRouter(prefix="/outlines", tags=["大纲"])
+import logging
 
+router = APIRouter(prefix="/outlines", tags=["大纲"])
+logger = logging.getLogger(__name__)
 
 def format_datetime(dt: datetime) -> str:
     """统一格式化日期时间，添加 UTC 时区标识"""
@@ -231,6 +233,7 @@ def generate_outline(
     使用 GET /tasks/{task_id} 查询任务状态
     """
     try:
+        logger.info(f"请求生成outline: user_id={current_user.id}, request={request.dict()}")
         # 创建异步任务
         task_params = {
             "course": request.course,
@@ -431,6 +434,7 @@ def generate_document(
     立即返回任务ID，后台异步生成文档内容
     使用 GET /tasks/{task_id} 查询任务状态
     """
+    logger.info(f"请求生成document: user_id={current_user.id}, outline_id={outline_id},  request={request.dict()}")
     outline = db.query(Outline).filter(
         Outline.id == outline_id,
         Outline.user_id == current_user.id

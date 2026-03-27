@@ -250,6 +250,7 @@ const applyPreset = (preset: Preset) => {
     section: preset.section,
     simulation: preset.simulation
   }
+  console.log(selectedModels.value)
 }
 
 const isPresetActive = (preset: Preset) => {
