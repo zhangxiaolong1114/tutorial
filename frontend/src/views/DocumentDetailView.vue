@@ -26,21 +26,12 @@
     </div>
 
     <!-- 文档内容 - 使用 iframe 展示完整 HTML -->
-    <div v-else-if="doc" class="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto">
-      <!-- 仿真沙箱（如果有仿真） -->
-      <div v-if="hasSimulation" class="bg-white rounded-xl shadow-sm p-4">
-        <h3 class="text-lg font-semibold text-gray-900 mb-3">交互仿真</h3>
-        <SimulationSandbox :code="simulationCode" :height="550" />
-      </div>
-      
-      <!-- 文档内容 -->
-      <div class="bg-white rounded-xl shadow-sm overflow-hidden flex-1 min-h-0">
-        <iframe 
-          ref="iframeRef"
-          class="w-full h-full border-0"
-          sandbox="allow-scripts allow-same-origin"
-        ></iframe>
-      </div>
+    <div v-else-if="doc" class="flex-1 min-h-0 bg-white rounded-xl shadow-sm overflow-hidden">
+      <iframe 
+        ref="iframeRef"
+        class="w-full h-full border-0"
+        sandbox="allow-scripts allow-same-origin"
+      ></iframe>
     </div>
 
     <!-- 错误状态 -->
@@ -55,10 +46,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api/index'
-import SimulationSandbox from '../components/SimulationSandbox.vue'
 
 interface Document {
   id: number
@@ -74,22 +64,6 @@ const documentId = route.params.id as string
 const doc = ref<Document | null>(null)
 const loading = ref(true)
 const iframeRef = ref<HTMLIFrameElement | null>(null)
-
-// 提取仿真代码（如果有的话）
-const simulationCode = computed(() => {
-  if (!doc.value?.html_content) return ''
-  
-  const html = doc.value.html_content
-  // 查找 simulation-container
-  const simMatch = html.match(/<div[^>]*class="[^"]*simulation-container[^"]*"[\s\S]*?<\/div>/i)
-  if (simMatch) {
-    return simMatch[0]
-  }
-  return ''
-})
-
-// 是否有仿真
-const hasSimulation = computed(() => !!simulationCode.value)
 
 const loadDocument = async () => {
   loading.value = true
