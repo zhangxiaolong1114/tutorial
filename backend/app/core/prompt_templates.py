@@ -1225,16 +1225,33 @@ def build_section_prompt(
 - 前一章：{pos.get('prev_title', '无')}
 - 后一章：{pos.get('next_title', '无')}""")
         
-        # 前置章节详细摘要（最近2章）
-        if context.get("prev_summaries"):
-            prev_parts = ["### 前置章节摘要"]
-            for idx, prev in enumerate(context['prev_summaries'][:2], 1):
-                prev_title = prev.get('title', f'第{idx}章')
-                prev_content = prev.get('content', '')
-                # 增加到800字符，保留更多关键信息
-                prev_essence = prev_content[:800] + "..." if len(prev_content) > 800 else prev_content
+        # 前置章节内容（从大纲中获取）
+        if context.get("full_outline") and context.get("current_index", 0) > 0:
+            current_idx = context.get("current_index", 0)
+            full_outline = context.get("full_outline", [])
+            
+            prev_parts = ["### 前置章节内容（来自大纲）"]
+            # 获取最近2章的大纲内容
+            for idx in range(max(0, current_idx - 2), current_idx):
+                prev_section = full_outline[idx]
+                prev_title = prev_section.get('title', f'第{idx+1}章')
+                prev_content = prev_section.get('content', [])
+                
+                # 格式化大纲要点
+                if isinstance(prev_content, list) and prev_content:
+                    content_str = "\n".join([f"  - {point}" for point in prev_content])
+                else:
+                    content_str = str(prev_content)
+                
+                # 获取前置章节的关键公式
+                prev_formulas = prev_section.get('key_formulas', [])
+                formulas_str = ""
+                if prev_formulas:
+                    formulas_str = "\n  核心公式：" + "；".join(prev_formulas[:2])
+                
                 prev_parts.append(f"""**{prev_title}**：
-{prev_essence}""")
+{content_str}{formulas_str}""")
+            
             context_parts.append("\n\n".join(prev_parts))
         
         parts.append("\n\n".join(context_parts))
