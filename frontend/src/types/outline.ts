@@ -6,6 +6,9 @@ export interface Section {
   content: string[] | string
   order: number
   children?: Section[]
+  prerequisites?: string[] | string
+  prepares_for?: string[] | string
+  key_formulas?: string[] | string
 }
 
 export interface Outline {

@@ -122,10 +122,34 @@
               {{ index + 1 }}
             </span>
             <div class="flex-1 space-y-3">
+              <!-- 章节标题 -->
               <input v-model="section.title" type="text" placeholder="章节标题"
                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-medium" />
-              <textarea v-model="section.content" rows="6" placeholder="内容要点（每行一个）"
+              
+              <!-- 内容要点 -->
+              <textarea v-model="section.content" rows="4" placeholder="内容要点（每行一个）"
                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-y min-h-[80px]"></textarea>
+              
+              <!-- 前置依赖 -->
+              <div class="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                <label class="text-xs font-medium text-amber-700 mb-1 block">前置依赖（需要前文已讲解的概念）</label>
+                <textarea v-model="section.prerequisites" rows="2" placeholder="每行一个概念，如：导数的定义&#10;极限的概念"
+                  class="w-full px-3 py-2 border border-amber-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent text-sm resize-y bg-white"></textarea>
+              </div>
+              
+              <!-- 后续铺垫 -->
+              <div class="bg-green-50 rounded-lg p-3 border border-green-200">
+                <label class="text-xs font-medium text-green-700 mb-1 block">后续铺垫（为后文打好基础的概念）</label>
+                <textarea v-model="section.prepares_for" rows="2" placeholder="每行一个概念，如：泰勒展开的应用&#10;高阶导数"
+                  class="w-full px-3 py-2 border border-green-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-sm resize-y bg-white"></textarea>
+              </div>
+              
+              <!-- 核心公式 -->
+              <div class="bg-purple-50 rounded-lg p-3 border border-purple-200">
+                <label class="text-xs font-medium text-purple-700 mb-1 block">核心公式（本章必须出现的公式）</label>
+                <textarea v-model="section.key_formulas" rows="2" placeholder="每行一个公式，如：$f'(x) = \\lim_{h\\to 0} \\frac{f(x+h)-f(x)}{h}$"
+                  class="w-full px-3 py-2 border border-purple-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm resize-y bg-white font-mono"></textarea>
+              </div>
             </div>
             <button @click="removeSection(index)"
               class="flex-shrink-0 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -195,7 +219,10 @@ const loadOutline = async () => {
     outline.value = await getOutline(outlineId)
     sections.value = (outline.value.sections || []).map(s => ({
       ...s,
-      content: Array.isArray(s.content) ? s.content.join('\n') : s.content
+      content: Array.isArray(s.content) ? s.content.join('\n') : s.content,
+      prerequisites: Array.isArray(s.prerequisites) ? s.prerequisites.join('\n') : s.prerequisites || '',
+      prepares_for: Array.isArray(s.prepares_for) ? s.prepares_for.join('\n') : s.prepares_for || '',
+      key_formulas: Array.isArray(s.key_formulas) ? s.key_formulas.join('\n') : s.key_formulas || ''
     }))
   } catch (error) {
     console.error('加载大纲失败:', error)
@@ -209,7 +236,10 @@ const addSection = () => {
     id: `section_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     title: '',
     content: '',
-    order: sections.value.length
+    order: sections.value.length,
+    prerequisites: '',
+    prepares_for: '',
+    key_formulas: ''
   }
   sections.value.push(newSection)
 }
@@ -236,7 +266,10 @@ const handleSave = async () => {
   try {
     const sectionsToSave = sections.value.map(s => ({
       ...s,
-      content: s.content ? s.content.split('\n').filter(c => c.trim()) : []
+      content: s.content ? s.content.split('\n').filter(c => c.trim()) : [],
+      prerequisites: s.prerequisites ? s.prerequisites.split('\n').filter(c => c.trim()) : [],
+      prepares_for: s.prepares_for ? s.prepares_for.split('\n').filter(c => c.trim()) : [],
+      key_formulas: s.key_formulas ? s.key_formulas.split('\n').filter(c => c.trim()) : []
     }))
     await updateOutline(outlineId, { sections: sectionsToSave })
     alert('保存成功')
