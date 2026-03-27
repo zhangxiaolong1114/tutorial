@@ -862,8 +862,15 @@ class TaskQueueService:
             包含 iframe 的 HTML 代码
         """
         import base64
+        import re
         
-        # 构建完整的 iframe 内容
+        # 清理仿真代码中的 markdown 标记
+        simulation_html = re.sub(r'^\s*```html\s*', '', simulation_html, flags=re.IGNORECASE)
+        simulation_html = re.sub(r'^\s*```\s*', '', simulation_html)
+        simulation_html = re.sub(r'\s*```\s*$', '', simulation_html)
+        simulation_html = simulation_html.strip()
+        
+        # 构建完整的 iframe 内容 - 添加自适应高度脚本
         iframe_content = f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -871,19 +878,74 @@ class TaskQueueService:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{section_title} - 仿真</title>
     <style>
+        * {{
+            box-sizing: border-box;
+        }}
         body {{
             margin: 0;
-            padding: 20px;
+            padding: 15px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f7fa;
+            background: #f8fafc;
+            min-height: 100vh;
         }}
         .simulation-wrapper {{
-            max-width: 800px;
+            max-width: 100%;
             margin: 0 auto;
             background: white;
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             overflow: hidden;
+            padding: 20px;
+        }}
+        /* 确保 Canvas 响应式 */
+        canvas {{
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }}
+        /* 控制面板样式 */
+        .control-panel {{
+            margin-top: 15px;
+            padding: 15px;
+            background: #f1f5f9;
+            border-radius: 8px;
+        }}
+        .control-panel label {{
+            display: block;
+            margin: 10px 0;
+            font-size: 14px;
+            color: #334155;
+        }}
+        .control-panel input[type="range"] {{
+            width: 100%;
+            margin-top: 5px;
+        }}
+        /* 数据面板样式 */
+        .data-panel {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 15px 0;
+            padding: 15px;
+            background: #e0f2fe;
+            border-radius: 8px;
+            font-size: 14px;
+        }}
+        .data-panel span {{
+            color: #0369a1;
+            font-weight: 500;
+        }}
+        /* 标题样式 */
+        .sim-header h3 {{
+            margin: 0 0 10px 0;
+            color: #1e293b;
+            font-size: 18px;
+        }}
+        .sim-header p {{
+            margin: 0;
+            color: #64748b;
+            font-size: 14px;
         }}
     </style>
 </head>
@@ -891,22 +953,70 @@ class TaskQueueService:
     <div class="simulation-wrapper">
         {simulation_html}
     </div>
+    <script>
+        // 向父窗口发送高度信息，实现自适应
+        function sendHeight() {{
+            const height = document.body.scrollHeight;
+            window.parent.postMessage({{
+                type: 'simulation-height',
+                height: height,
+                section: '{section_title}'
+            }}, '*');
+        }}
+        
+        // 初始发送高度
+        window.addEventListener('load', sendHeight);
+        
+        // 内容变化时重新计算高度
+        const observer = new MutationObserver(sendHeight);
+        observer.observe(document.body, {{ childList: true, subtree: true }});
+        
+        // 窗口大小变化时重新计算
+        window.addEventListener('resize', sendHeight);
+        
+        // 定期发送高度（防止动态内容未触发 mutation）
+        setInterval(sendHeight, 1000);
+    </script>
 </body>
 </html>'''
         
         # Base64 编码
         encoded_content = base64.b64encode(iframe_content.encode('utf-8')).decode('utf-8')
         
-        # 生成 iframe HTML
-        iframe_html = f'''<div class="simulation-iframe-wrapper" style="margin: 20px 0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+        # 生成唯一的 iframe ID
+        import uuid
+        iframe_id = f'sim-{uuid.uuid4().hex[:8]}'
+        
+        # 生成 iframe HTML - 使用自适应高度
+        iframe_html = f'''<div class="simulation-iframe-wrapper" style="margin: 20px 0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); background: white;">
     <iframe 
+        id="{iframe_id}"
         src="data:text/html;base64,{encoded_content}" 
-        style="width: 100%; height: 600px; border: none; display: block;"
-        sandbox="allow-scripts allow-same-origin"
+        style="width: 100%; min-height: 400px; border: none; display: block;"
+        sandbox="allow-scripts"
         title="{section_title}"
-        loading="lazy"
+        scrolling="no"
     ></iframe>
-</div>'''
+</div>
+<script>
+    // 监听 iframe 发送的高度信息
+    window.addEventListener('message', function(e) {{
+        if (e.data && e.data.type === 'simulation-height') {{
+            const iframe = document.getElementById('{iframe_id}');
+            if (iframe) {{
+                iframe.style.height = (e.data.height + 30) + 'px';
+            }}
+        }}
+    }});
+    
+    // 设置初始高度
+    (function() {{
+        const iframe = document.getElementById('{iframe_id}');
+        if (iframe) {{
+            iframe.style.height = '600px';
+        }}
+    }})();
+</script>'''
         
         return iframe_html
     
