@@ -124,8 +124,8 @@
             <div class="flex-1 space-y-3">
               <input v-model="section.title" type="text" placeholder="章节标题"
                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-medium" />
-              <textarea v-model="section.content" rows="3" placeholder="内容要点（每行一个）"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-none"></textarea>
+              <textarea v-model="section.content" rows="6" placeholder="内容要点（每行一个）"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-y min-h-[80px]"></textarea>
             </div>
             <button @click="removeSection(index)"
               class="flex-shrink-0 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -296,7 +296,7 @@ const confirmGenerateDocument = async () => {
   try {
     // 获取模型配置
     const modelConfig = modelSelectorRef.value?.getModelConfig()
-    
+
     const result = await generateDocument(outlineId, modelConfig)
 
     currentTask.value = {

@@ -511,30 +511,35 @@ def init_model_api_keys(settings_dict: dict):
                 ...
             }
     """
-    # Kimi
+    # Kimi / Moonshot
     if settings_dict.get("kimi"):
         model_registry.update_api_key("kimi-k2.5", settings_dict["kimi"])
-        model_registry.update_api_key("kimi-k1.5", settings_dict["kimi"])
+        logger.info(f"[Model Init] 已加载 Kimi API Key")
     
     # DeepSeek
     if settings_dict.get("deepseek"):
-        model_registry.update_api_key("deepseek-v3", settings_dict["deepseek"])
-        model_registry.update_api_key("deepseek-r1", settings_dict["deepseek"])
+        model_registry.update_api_key("deepseek-reasoner", settings_dict["deepseek"])
+        model_registry.update_api_key("deepseek-chat", settings_dict["deepseek"])
+        logger.info(f"[Model Init] 已加载 DeepSeek API Key")
     
-    # Qwen
+    # Qwen / 通义千问
     if settings_dict.get("qwen"):
-        model_registry.update_api_key("qwen-coder", settings_dict["qwen"])
-        model_registry.update_api_key("qwen-plus", settings_dict["qwen"])
+        model_registry.update_api_key("Qwen-3.5-Plus", settings_dict["qwen"])
+        model_registry.update_api_key("qwen-image-2.0", settings_dict["qwen"])
+        model_registry.update_api_key("MiniMax-M2.5", settings_dict["qwen"])
+        logger.info(f"[Model Init] 已加载 Qwen API Key")
     
-    # GLM
+    # GLM / 智谱
     if settings_dict.get("glm"):
-        model_registry.update_api_key("glm-4", settings_dict["glm"])
+        model_registry.update_api_key("glm-5", settings_dict["glm"])
+        logger.info(f"[Model Init] 已加载 GLM API Key")
     
     # OpenAI
     if settings_dict.get("openai"):
-        model_registry.update_api_key("gpt-4o", settings_dict["openai"])
+        # 如果注册了 OpenAI 模型，在这里添加
+        logger.info(f"[Model Init] 已加载 OpenAI API Key")
     
-    logger.info("[Model Init] API Keys 已加载")
+    logger.info("[Model Init] API Keys 初始化完成")
 
 
 def get_model_recommendations(task: GenerationTask) -> List[dict]:

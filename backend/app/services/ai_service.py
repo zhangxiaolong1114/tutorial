@@ -203,11 +203,24 @@ class AIService:
             if key:
                 api_keys[model_id] = key
         
-        # 加载自定义 Base URL
-        for model_id in ["deepseek", "qwen", "glm", "claude"]:
-            base_url = getattr(settings, f'{model_id.upper()}_BASE_URL', '')
-            if base_url:
-                model_registry.update_base_url(f"{model_id}-v3" if model_id == "deepseek" else f"{model_id}-coder", base_url)
+        # 加载自定义 Base URL - 更新所有使用该提供商的模型
+        # DeepSeek
+        deepseek_base_url = getattr(settings, 'DEEPSEEK_BASE_URL', '')
+        if deepseek_base_url:
+            model_registry.update_base_url("deepseek-reasoner", deepseek_base_url)
+            model_registry.update_base_url("deepseek-chat", deepseek_base_url)
+        
+        # Qwen
+        qwen_base_url = getattr(settings, 'QWEN_BASE_URL', '')
+        if qwen_base_url:
+            model_registry.update_base_url("Qwen-3.5-Plus", qwen_base_url)
+            model_registry.update_base_url("qwen-image-2.0", qwen_base_url)
+            model_registry.update_base_url("MiniMax-M2.5", qwen_base_url)
+        
+        # GLM
+        glm_base_url = getattr(settings, 'GLM_BASE_URL', '')
+        if glm_base_url:
+            model_registry.update_base_url("glm-5", glm_base_url)
         
         init_model_api_keys(api_keys)
         logger.info("[AIService] API Keys 初始化完成")
