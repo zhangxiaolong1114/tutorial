@@ -137,7 +137,7 @@ class ModelRegistry:
             id="deepseek-reasoner",
             name="deepseek-reasoner",
             provider=ModelProvider.DEEPSEEK,
-            model_id="deepseek-chat",
+            model_id="deepseek-reasoner",
             base_url="https://api.deepseek.com/v1",
             supports_temperature=True,
             default_temperature=0.7,
@@ -153,7 +153,7 @@ class ModelRegistry:
             id="deepseek-chat",
             name="deepseek-chat",
             provider=ModelProvider.DEEPSEEK,
-            model_id="deepseek-reasoner",
+            model_id="deepseek-chat",
             base_url="https://api.deepseek.com/v1",
             supports_temperature=True,
             default_temperature=0.7,
@@ -314,7 +314,7 @@ class ModelRouter:
         temperature: Optional[float] = None,
         task_config: Optional[TaskModelConfig] = None,
         **kwargs
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, str]:
         """
         路由到合适的模型并调用
         
@@ -327,7 +327,7 @@ class ModelRouter:
             **kwargs: 额外参数
             
         Returns:
-            (content, log_file_path)
+            (content, log_file_path, finish_reason)
         """
         # 确定使用的模型
         config = None

@@ -972,11 +972,18 @@ def build_outline_prompt(course: str, knowledge_point: str, config: dict) -> str
     exercise_types_str = "\n".join(['- ' + t for t in interactive_config['exercise_types']])
     
     # 构建仿真章节文本
-    simulation_section = """### simulation / 交互探索 / 交互对比 类章节
+    simulation_section = """### simulation / 交互探索 / 交互对比 类章节【强化关联性要求】
 必须包含：
-- 仿真目标：用户可以通过仿真观察什么现象
-- 可调参数：2-4个关键参数及其物理意义
-- 观察指标：应该关注哪些输出结果
+- **仿真目标**：明确说明本仿真要验证前面哪些章节的理论结论
+- **理论基础**：列出仿真所依据的具体公式和概念（必须来自前面的章节）
+- **可调参数**：2-4个关键参数及其物理意义，说明调节该参数要验证什么理论
+- **观察指标**：应该关注哪些输出结果，以及这些结果与理论的对应关系
+- **prepares_for 特殊要求**：仿真章节必须指向"对参数影响的直观理解"、"理论验证"等具体收获
+
+**关联性强制要求**：
+- prerequisites 必须包含前面章节的核心理论（如"第2章的阻尼比公式"）
+- content 的第一点必须是"本仿真验证的理论基础"
+- content 的最后一点必须是"通过仿真加深对XX理论的理解"
 """
     
     # 构建特殊章节提示文本
@@ -1058,23 +1065,71 @@ def build_outline_prompt(course: str, knowledge_point: str, config: dict) -> str
     ]
 }}
 
+## 全局知识规划（先生成，再分配）
+在生成具体章节之前，请先进行全局知识规划：
+
+### 步骤1：识别核心概念
+列出本知识点涉及的所有关键概念（5-10个），按依赖关系排序：
+1. 最基础的概念（不依赖其他概念）
+2. 派生概念（依赖基础概念）
+3. 应用概念（依赖派生概念）
+
+### 步骤2：规划概念分布
+将核心概念分配到各章节：
+- 每个章节负责讲解 1-3 个核心概念
+- 确保概念之间的依赖关系合理（前置概念在前面的章节）
+- 明确每个概念在哪些章节中被使用
+
+### 步骤3：设计公式体系
+列出本知识点涉及的所有核心公式（3-6个）：
+- 基础公式（定义式）
+- 推导公式（定理式）
+- 应用公式（计算式）
+- 明确公式之间的推导关系
+
 ## 章节关联信息要求
-每个章节必须包含以下关联信息，用于保证文档连贯性：
+基于全局知识规划，为每个章节填写以下关联信息：
 
 ### prerequisites（前置依赖）
-- 列出本章需要依赖的前置知识
+- 从全局知识规划中，找出本章概念依赖的前置概念
 - 这些概念必须在前面的章节中已经讲解
+- 必须与步骤2中的概念分布一致
 - 示例：["导数的定义", "极限的概念"]
 
-### prepares_for（后续铺垫）
-- 列出本章需要为后续章节铺垫的关键概念
+### prepares_for（后续铺垫）【要求具体化】
+- 从全局知识规划中，找出本章为后续章节铺垫的概念
+- **必须具体到可操作的知识点**，避免笼统表述
+- ❌ 避免：["PID控制器学习"] （过于宽泛）
+- ✅ 推荐：["理解积分控制与微分控制的互补性", "掌握相位超前补偿的网络结构"]
 - 这些概念在本章打好基础，但不要提前展开
-- 示例：["泰勒展开的应用", "高阶导数"]
+- 必须与步骤2中的概念分布一致
 
-### key_formulas（核心公式）
-- 列出本章必须出现的核心公式（用 LaTeX 格式）
-- 这些公式将在后续章节中被引用
-- 示例：["$f'(x) = \\lim_{{h\\to 0}} \\frac{{f(x+h)-f(x)}}{{h}}$"]
+### key_formulas（核心公式）【增加引用追踪】
+- 从全局知识规划中，选择本章需要讲解的公式
+- **标注每个公式在哪些后续章节被使用**
+- 格式：使用 JSON 对象，包含 formula 和 used_in 字段
+- 必须与步骤3中的公式体系一致
+
+## 连贯性检查清单【增强版】
+生成完成后，请检查：
+
+### 基础连贯性
+- [ ] 第N章的 prepares_for 是否与第N+1章的 prerequisites 匹配
+- [ ] 每个核心概念是否都有章节负责讲解
+- [ ] 每个核心公式是否都在合适的章节出现
+- [ ] 概念依赖关系是否合理（没有循环依赖）
+- [ ] 前置依赖中的概念是否都在前面的章节中
+
+### 内容衔接检查【新增】
+- [ ] **章节边界检查**：第N章的最后一个要点与第N+1章的第一个要点是否自然衔接
+- [ ] **概念首次出现**：每个概念首次出现时必须有完整解释，后续章节直接引用
+- [ ] **避免重复**：同一概念不要在多个章节重复详细讲解
+- [ ] **难度递进**：从具体到抽象，从简单到复杂，避免难度跳跃
+
+### 仿真章节特殊检查【新增】
+- [ ] **仿真实验的理论基础**：仿真章节的 prerequisites 必须包含需要验证的具体理论
+- [ ] **观察现象与理论对应**：仿真中观察的每个现象都应有对应的理论解释章节
+- [ ] **参数调节的目的性**：每个可调参数都应对应验证特定的理论结论
 
 ## 重要规则
 - content 必须是字符串数组，每个元素是具体的教学内容描述
@@ -1207,44 +1262,73 @@ def build_section_prompt(
         
         parts.append("\n\n".join(context_parts))
     
-    # 3. 任务定义
+    # 3. 任务定义【参照完整大纲，保证内容完整性】
     parts.append(f"""## 任务
 为课程《{course}》的知识点「{knowledge_point}」撰写「{section_title}」部分。
 
-## 需要覆盖的核心内容
-{key_points_str}""")
+## 大纲要求（必须全部实现）
+{key_points_str}
+
+**重要**：以上大纲要点必须全部覆盖，不得遗漏或简化。每个要点都要展开为完整的教学内容。""")
     
-    # 4. 连贯性要求（增强）
+    # 4. 连贯性要求【参照完整大纲上下文】
     if context:
         coherence_parts = ["## 连贯性要求"]
         
+        # 前置依赖处理
         if context.get("current_section_meta", {}).get("prerequisites"):
-            coherence_parts.append("- 确保前置依赖中的概念已经在前文充分讲解，本章可以直接引用")
+            prereqs = context['current_section_meta']['prerequisites']
+            if isinstance(prereqs, list) and prereqs:
+                coherence_parts.append(f"- 前置知识（已在前文讲解）：{', '.join(prereqs[:3])}")
+                coherence_parts.append("- 以上前置知识本章可直接引用，无需重复解释")
         
+        # 后续铺垫处理
         if context.get("current_section_meta", {}).get("prepares_for"):
-            prepares = ", ".join(context['current_section_meta']['prepares_for'])
-            coherence_parts.append(f"- 为后续章节铺垫：{prepares}。打好基础但不要提前展开")
+            prepares = context['current_section_meta']['prepares_for']
+            if isinstance(prepares, list) and prepares:
+                coherence_parts.append(f"- 为后文铺垫：{', '.join(prepares[:3])}")
+                coherence_parts.append("- 以上内容在本章打好基础，但不要提前展开细节")
         
+        # 核心公式处理
         if context.get("current_section_meta", {}).get("key_formulas"):
-            coherence_parts.append("- 核心公式必须在本章出现，并确保与前后章节的公式体系一致")
+            formulas = context['current_section_meta']['key_formulas']
+            if isinstance(formulas, list) and formulas:
+                # 处理可能是对象或字符串的情况
+                formula_list = []
+                for f in formulas[:3]:
+                    if isinstance(f, dict):
+                        formula_list.append(f.get('formula', str(f)))
+                    else:
+                        formula_list.append(str(f))
+                coherence_parts.append(f"- 本章必须包含的核心公式：{', '.join(formula_list)}")
         
-        coherence_parts.append("- 保持术语和符号体系与前置章节一致")
+        coherence_parts.append("- 保持术语和符号体系与前置章节完全一致")
         coherence_parts.append("- 内容应自然延续前置知识，避免生硬衔接")
         
         parts.append("\n".join(coherence_parts))
     
-    # 5. 结构指令
-    parts.append(f"## 内容组织方式\n{get_content_structure(teaching_style)}")
+    # 5. 内容组织方式（简化版）
+    parts.append(f"""## 内容组织方式
+{get_content_structure(teaching_style)}
+
+**写作提示**：
+- 每个大纲要点对应一个段落或小节
+- 段落之间要有自然的过渡句
+- 从已知到未知，循序渐进""")
     
-    # 6. 深度指令
-    parts.append(get_formula_instruction(formula_detail, difficulty))
+    # 6. 公式要求（精简版）
+    parts.append("""## 公式格式要求
+- 行内公式使用 $...$ 格式，如 $E=mc^2$
+- 块级公式使用 $$...$$ 格式，如 $$\\sum_{i=1}^n x_i$$
+- 公式命令使用单反斜杠，如 \\frac, \\sum, \\alpha
+- 确保公式在 HTML 中可通过 katex 正常渲染""")
     
     # 7. 内容样式
     style_instructions = {
-        "concise": "【内容密度】简洁明了，每段只讲一个核心点，避免冗余解释。",
-        "detailed": "【内容密度】详细全面，多角度阐述，提供丰富的背景和细节。",
-        "visual": "【内容密度】图文并茂，多用比喻和直观描述，降低抽象度。",
-        "formula_heavy": "【内容密度】公式密集，强调数学严谨性，多用符号表达。",
+        "concise": "【内容密度】简洁明了，每段只讲一个核心点。",
+        "detailed": "【内容密度】详细全面，多角度阐述。",
+        "visual": "【内容密度】图文并茂，多用比喻和直观描述。",
+        "formula_heavy": "【内容密度】公式密集，强调数学严谨性。",
     }
     parts.append(style_instructions.get(content_style, style_instructions["detailed"]))
     
@@ -1257,8 +1341,18 @@ def build_section_prompt(
     if need_images:
         parts.append(IMAGE_INSTRUCTION)
     
-    # 10. 统一约束
-    parts.append(UNIFORM_CONSTRAINTS)
+    # 10. 统一约束（精简版）
+    parts.append("""## 输出格式要求
+- 最外层：<div class="section-content">
+- 主标题：<h3>章节标题</h3>
+- 小节：<h4>小节标题</h4>
+- 段落：<p>内容</p>
+- 公式：行内 $...$，块级 $$...$$
+- 教授提示：<div class="tip">提示内容</div>
+- 常见错误：<div class="warning">警告内容</div>
+- 必须包含至少1个具体数值案例
+- 关键概念首次出现必加粗<strong>
+- 禁止出现"综上所述"等套话""")
     
     # 11. 长度控制
     parts.append(get_length_constraint(chapter_granularity))

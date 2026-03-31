@@ -257,7 +257,7 @@ class AIService:
         ]
         
         logger.info(f"[AI Service] Task {task_id} - 调用模型生成大纲")
-        content, log_file = model_router.route(
+        content, log_file, _ = model_router.route(
             task=GenerationTask.OUTLINE,
             messages=messages,
             model_id=model_id,
@@ -307,7 +307,7 @@ class AIService:
         ]
         
         logger.info(f"[AI Service] Task {task_id} - 调用模型生成章节")
-        content, log_file = model_router.route(
+        content, log_file, _ = model_router.route(
             task=GenerationTask.SECTION,
             messages=messages,
             model_id=model_id,
@@ -474,7 +474,7 @@ class AIService:
         ]
         
         try:
-            structure_content, _ = model_router.route(
+            structure_content, _, _ = model_router.route(
                 task=GenerationTask.SIMULATION,
                 messages=structure_messages,
                 model_id=model_id,
@@ -522,7 +522,7 @@ class AIService:
         try:
             logger.info(f"[Simulation] Task {task_id} - 调用模型生成逻辑代码")
             logger.info(f"[Simulation] Task {task_id} - 消息数: {len(logic_messages)}, 任务类型: SIMULATION")
-            logic_content, logic_log_file = model_router.route(
+            logic_content, logic_log_file, _ = model_router.route(
                 task=GenerationTask.SIMULATION,
                 messages=logic_messages,
                 model_id=model_id,
@@ -590,7 +590,7 @@ class AIService:
             {"role": "user", "content": prompt}
         ]
         
-        content, _ = model_router.route(
+        content, _, _ = model_router.route(
             task=GenerationTask.SIMULATION,
             messages=messages,
             model_id=model_id,

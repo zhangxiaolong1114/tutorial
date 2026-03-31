@@ -143,14 +143,6 @@ class TaskQueueService:
                 logger.warning(f"[Task] 任务 {task_id} 不存在")
                 return
             
-            if task.status == TaskStatus.PROCESSING:
-                # 检查是否卡住（超时）
-                if task.started_at and (datetime.now() - task.started_at).seconds > 3600:
-                    logger.warning(f"[Task] 任务 {task_id} 卡住，重新执行")
-                else:
-                    logger.info(f"[Task] 任务 {task_id} 正在处理中，跳过")
-                    return
-            
             # 初始化任务日志
             log_context = task_logger.start_task(
                 task_id=str(task_id),
@@ -158,10 +150,9 @@ class TaskQueueService:
                 user_id=task.user_id
             )
             
-            # 更新为处理中
-            task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now()
-            task.error_message = None  # 清除之前的错误
+            # 状态已经在 start_worker 中更新为 PROCESSING
+            # 这里只需要清除之前的错误信息
+            task.error_message = None
             db.commit()
             
             log_context.info("任务开始处理", 
@@ -640,7 +631,7 @@ class TaskQueueService:
                         if current_idx < len(full_outline) - 1:
                             next_title = full_outline[current_idx + 1].get("title")
                     
-                    # 构建V2版本的仿真上下文 - 包含完整的章节信息
+                    # 构建V3版本的仿真上下文 - 包含完整的章节信息和大纲上下文
                     simulation_context = {
                         "prev_summary": context.get("prev_summary") if context else None,
                         "prev_summaries": context.get("prev_summaries") if context else None,
@@ -665,7 +656,7 @@ class TaskQueueService:
                         }
                     }
                     
-                    logger.info(f"[Task {task_id}] 开始生成仿真 (V2): {simulation_desc[:100]}")
+                    logger.info(f"[Task {task_id}] 开始生成仿真 (V3): {simulation_desc[:100]}")
                     
                     try:
                         simulation_html = ai_service.generate_simulation(
@@ -677,7 +668,7 @@ class TaskQueueService:
                             task_id=task_id,
                             context=simulation_context,
                             model_id=simulation_model_id,
-                            use_v2=True,  # 使用V2版本
+                            use_v2=True,  # 使用V3版本（通过use_v2参数传递）
                         )
                         
                         logger.info(f"[Task {task_id}] 仿真生成完成, HTML长度: {len(simulation_html)}")
@@ -705,9 +696,9 @@ class TaskQueueService:
                         # 将仿真代码用 iframe 包裹，实现沙箱隔离
                         iframe_html = self._wrap_simulation_in_iframe(simulation_html, section_title)
                         wrapped_html = f'''<div class="section-content">
-<h3>{section_title}</h3>
-{iframe_html}
-</div>'''
+                                            <h3>{section_title}</h3>
+                                            {iframe_html}
+                                            </div>'''
                         return {
                             'html': f"<section id='{section_id}'>\n{wrapped_html}\n</section>",
                             'content': wrapped_html,
@@ -740,46 +731,38 @@ class TaskQueueService:
                         }
                 
                 else:
-                    # 普通章节 - 传递完整的章节信息
-                    # 构建包含完整章节信息的上下文
-                    section_context = {
-                        **context,
-                        "current_section_full": {
+                    # 普通章节 - 临时使用占位符，跳过AI生成
+                    logger.info(f"[Task {task_id}] 普通章节使用占位符跳过: {section_title}")
+                    
+                    # 构建简单的占位符内容
+                    content_list = section_content if isinstance(section_content, list) else [str(section_content)]
+                    content_html = "\n".join([f"<p>{point}</p>" for point in content_list])
+                    
+                    placeholder_html = f'''<div class="section-content">
+<h3>{section_title}</h3>
+<div class="content-placeholder" style="border: 2px dashed #9ca3af; border-radius: 8px; padding: 20px; margin: 15px 0; background: #f9fafb;">
+    <p style="color: #6b7280; margin-bottom: 12px;">📄 内容大纲：</p>
+    {content_html}
+    <p style="color: #9ca3af; margin-top: 12px; font-size: 0.9em;">（详细内容生成中...）</p>
+</div>
+</div>'''
+                    
+                    return {
+                        'html': f"<section id='{section_id}'>{placeholder_html}</section>",
+                        'content': placeholder_html,
+                        'meta': {
                             "id": section_id,
                             "title": section_title,
-                            "content": section_content,
-                            "prerequisites": section.get("prerequisites", []),
-                            "prepares_for": section.get("prepares_for", []),
-                            "key_formulas": section.get("key_formulas", [])
+                            "generated": True,
+                            "error": None,
+                            "type": "content",
+                            "retry_count": 0,
+                            "model_used": "placeholder"
                         }
                     }
                     
-                    if config:
-                        html_content = ai_service.generate_section(
-                            section_title=section_title,
-                            section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
-                            course=outline.course,
-                            knowledge_point=outline.knowledge_point,
-                            config=config,
-                            task_id=task_id,
-                            model_id=section_model_id,
-                            context=section_context,
-                        )
-                    else:
-                        html_content = ai_service.generate_section(
-                            section_title=section_title,
-                            section_key_points=section_content if isinstance(section_content, list) else [str(section_content)],
-                            course=outline.course,
-                            knowledge_point=outline.knowledge_point,
-                            config={},
-                            task_id=task_id,
-                            model_id=section_model_id,
-                            context=section_context,
-                        )
-                    
-                    has_error = '内容生成失败' in html_content
-                    
-                    if not has_error:
+                    # 以下代码暂时不执行（保留用于恢复真实生成）
+                    if False:  # 占位符，永远不会执行
                         return {
                             'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
                             'content': html_content,
@@ -852,173 +835,27 @@ class TaskQueueService:
     
     def _wrap_simulation_in_iframe(self, simulation_html: str, section_title: str) -> str:
         """
-        将仿真代码用 iframe 包裹，实现沙箱隔离
-        
+        将仿真代码直接嵌入文档（不使用 iframe）
+
         Args:
             simulation_html: 仿真 HTML 代码
             section_title: 章节标题
-            
+
         Returns:
-            包含 iframe 的 HTML 代码
+            直接嵌入的仿真 HTML 代码
         """
-        import base64
         import re
-        
+
         # 清理仿真代码中的 markdown 标记
         simulation_html = re.sub(r'^\s*```html\s*', '', simulation_html, flags=re.IGNORECASE)
         simulation_html = re.sub(r'^\s*```\s*', '', simulation_html)
         simulation_html = re.sub(r'\s*```\s*$', '', simulation_html)
         simulation_html = simulation_html.strip()
-        
-        # 构建完整的 iframe 内容 - 添加自适应高度脚本
-        iframe_content = f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{section_title} - 仿真</title>
-    <style>
-        * {{
-            box-sizing: border-box;
-        }}
-        body {{
-            margin: 0;
-            padding: 15px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f8fafc;
-            min-height: 100vh;
-        }}
-        .simulation-wrapper {{
-            max-width: 100%;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            overflow: hidden;
-            padding: 20px;
-        }}
-        /* 确保 Canvas 响应式 */
-        canvas {{
-            max-width: 100%;
-            height: auto;
-            display: block;
-            margin: 0 auto;
-        }}
-        /* 控制面板样式 */
-        .control-panel {{
-            margin-top: 15px;
-            padding: 15px;
-            background: #f1f5f9;
-            border-radius: 8px;
-        }}
-        .control-panel label {{
-            display: block;
-            margin: 10px 0;
-            font-size: 14px;
-            color: #334155;
-        }}
-        .control-panel input[type="range"] {{
-            width: 100%;
-            margin-top: 5px;
-        }}
-        /* 数据面板样式 */
-        .data-panel {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin: 15px 0;
-            padding: 15px;
-            background: #e0f2fe;
-            border-radius: 8px;
-            font-size: 14px;
-        }}
-        .data-panel span {{
-            color: #0369a1;
-            font-weight: 500;
-        }}
-        /* 标题样式 */
-        .sim-header h3 {{
-            margin: 0 0 10px 0;
-            color: #1e293b;
-            font-size: 18px;
-        }}
-        .sim-header p {{
-            margin: 0;
-            color: #64748b;
-            font-size: 14px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="simulation-wrapper">
-        {simulation_html}
-    </div>
-    <script>
-        // 向父窗口发送高度信息，实现自适应
-        function sendHeight() {{
-            const height = document.body.scrollHeight;
-            window.parent.postMessage({{
-                type: 'simulation-height',
-                height: height,
-                section: '{section_title}'
-            }}, '*');
-        }}
-        
-        // 初始发送高度
-        window.addEventListener('load', sendHeight);
-        
-        // 内容变化时重新计算高度
-        const observer = new MutationObserver(sendHeight);
-        observer.observe(document.body, {{ childList: true, subtree: true }});
-        
-        // 窗口大小变化时重新计算
-        window.addEventListener('resize', sendHeight);
-        
-        // 定期发送高度（防止动态内容未触发 mutation）
-        setInterval(sendHeight, 1000);
-    </script>
-</body>
-</html>'''
-        
-        # Base64 编码
-        encoded_content = base64.b64encode(iframe_content.encode('utf-8')).decode('utf-8')
-        
-        # 生成唯一的 iframe ID
-        import uuid
-        iframe_id = f'sim-{uuid.uuid4().hex[:8]}'
-        
-        # 生成 iframe HTML - 使用自适应高度
-        iframe_html = f'''<div class="simulation-iframe-wrapper" style="margin: 20px 0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); background: white;">
-    <iframe 
-        id="{iframe_id}"
-        src="data:text/html;base64,{encoded_content}" 
-        style="width: 100%; min-height: 400px; border: none; display: block;"
-        sandbox="allow-scripts"
-        title="{section_title}"
-        scrolling="no"
-    ></iframe>
-</div>
-<script>
-    // 监听 iframe 发送的高度信息
-    window.addEventListener('message', function(e) {{
-        if (e.data && e.data.type === 'simulation-height') {{
-            const iframe = document.getElementById('{iframe_id}');
-            if (iframe) {{
-                iframe.style.height = (e.data.height + 30) + 'px';
-            }}
-        }}
-    }});
-    
-    // 设置初始高度
-    (function() {{
-        const iframe = document.getElementById('{iframe_id}');
-        if (iframe) {{
-            iframe.style.height = '600px';
-        }}
-    }})();
-</script>'''
-        
-        return iframe_html
+
+        # 直接返回仿真代码，包装在容器中
+        return f'''<div class="simulation-container-wrapper" style="margin: 20px 0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); background: white;">
+    {simulation_html}
+</div>'''
     
     def _save_document(self, db: Session, task: TaskQueue, outline, title: str, 
                        full_html: str, generated_sections: list, log_context: TaskLogContext) -> "Document":
@@ -1082,11 +919,23 @@ class TaskQueueService:
             try:
                 db = SessionLocal()
                 try:
+                    # 获取并锁定任务，在同一个事务中更新状态
                     pending_tasks = self.get_pending_tasks(db, limit=1)
                     
                     if pending_tasks:
                         task = pending_tasks[0]
+                        
+                        # 立即更新状态为 PROCESSING，防止其他 worker 获取
+                        task.status = TaskStatus.PROCESSING
+                        task.started_at = datetime.now()
+                        db.commit()
+                        
                         logger.info(f"[Worker {worker_id}] 获取任务 {task.id}")
+                        
+                        # 关闭数据库连接后再处理任务
+                        db.close()
+                        db = None
+                        
                         await self.process_task(task.id)
                     else:
                         await asyncio.wait_for(
@@ -1097,7 +946,8 @@ class TaskQueueService:
                 except asyncio.TimeoutError:
                     pass
                 finally:
-                    db.close()
+                    if db:
+                        db.close()
                     
             except Exception as e:
                 logger.error(f"[Worker {worker_id}] 错误: {e}")

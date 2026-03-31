@@ -9,7 +9,7 @@ PID_FILE="$APP_DIR/.service.pid"
 LOG_FILE="$APP_DIR/.service.log"
 HOST="0.0.0.0"
 PORT="8000"
-WORKERS="2"
+WORKERS="1"
 
 # 颜色输出
 RED='\033[0;31m'

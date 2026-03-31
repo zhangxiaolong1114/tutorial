@@ -25,7 +25,7 @@ Base.metadata.create_all(bind=engine)
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时启动任务队列
-    await task_queue_service.start(num_workers=2)
+    await task_queue_service.start(num_workers=1)
     yield
     # 关闭时停止任务队列
     await task_queue_service.stop()

@@ -183,12 +183,12 @@ class BaseModelCaller:
         max_retries: int = 3,
         max_continuation: int = 5,
         **kwargs
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, str]:
         """
         调用模型（支持自动续生成）
         
         Returns:
-            (content, log_file_path)
+            (content, log_file_path, finish_reason)
         """
         raise NotImplementedError
     
@@ -231,7 +231,7 @@ class OpenAICompatibleCaller(BaseModelCaller):
     OpenAI 兼容格式调用器
     适用于：Moonshot/Kimi、DeepSeek、Qwen、GLM 等
     """
-    
+
     def __init__(self, provider: ModelProvider):
         super().__init__(provider)
         self.provider_base_urls = {
@@ -241,7 +241,7 @@ class OpenAICompatibleCaller(BaseModelCaller):
             ModelProvider.GLM: "https://open.bigmodel.cn/api/paas/v4",
             ModelProvider.OPENAI: "https://api.openai.com/v1",
         }
-    
+
     def __call__(
         self,
         config: ModelConfig,
@@ -252,8 +252,8 @@ class OpenAICompatibleCaller(BaseModelCaller):
         max_retries: int = 3,
         max_continuation: int = 5,
         **kwargs
-    ) -> Tuple[str, str]:
-        
+    ) -> Tuple[str, str, str]:
+
         if not config.api_key:
             raise ValueError(f"{config.id} 未配置 API Key")
         
@@ -338,7 +338,7 @@ class OpenAICompatibleCaller(BaseModelCaller):
                 # 检查是否完成
                 if finish_reason != "length":
                     token_rate_limiter.record_actual_usage(total_tokens)
-                    return "".join(all_content), log_file
+                    return "".join(all_content), log_file, finish_reason
                 
                 # 需要续生成
                 logger.info(f"[{self.provider.value}] 内容不完整，继续生成...")
@@ -361,7 +361,10 @@ class OpenAICompatibleCaller(BaseModelCaller):
         
         # 达到最大续生成次数
         logger.warning(f"[{self.provider.value}] 达到最大续生成次数，返回已生成内容")
-        return "".join(all_content), log_file if 'log_file' in locals() else ""
+        final_content = "".join(all_content)
+        final_log_file = log_file if 'log_file' in locals() else ""
+        final_finish_reason = finish_reason if 'finish_reason' in locals() else "unknown"
+        return final_content, final_log_file, final_finish_reason
 
 
 class ClaudeCaller(BaseModelCaller):
@@ -380,11 +383,11 @@ class ClaudeCaller(BaseModelCaller):
         max_retries: int = 3,
         max_continuation: int = 5,
         **kwargs
-    ) -> Tuple[str, str]:
-        
+    ) -> Tuple[str, str, str]:
+
         if not config.api_key:
             raise ValueError(f"{config.id} 未配置 API Key")
-        
+
         # Claude 使用 messages 格式，但 API 端点不同
         base_url = config.base_url or "https://api.anthropic.com/v1"
         
@@ -454,7 +457,7 @@ class ClaudeCaller(BaseModelCaller):
                 
                 # 检查是否完成
                 if stop_reason != "max_tokens":
-                    return "".join(all_content), log_file
+                    return "".join(all_content), log_file, stop_reason
                 
                 # 需要续生成
                 logger.info(f"[claude] 内容不完整，继续生成...")
@@ -474,8 +477,12 @@ class ClaudeCaller(BaseModelCaller):
             except Exception as e:
                 logger.error(f"[claude] Task {task_id}/{task.value} - 调用失败: {e}")
                 raise
-        
-        return "".join(all_content), log_file if 'log_file' in locals() else ""
+
+        # 达到最大续生成次数，返回已生成内容
+        final_content = "".join(all_content)
+        final_log_file = log_file if 'log_file' in locals() else ""
+        final_stop_reason = stop_reason if 'stop_reason' in locals() else "unknown"
+        return final_content, final_log_file, final_stop_reason
 
 
 # ============ 注册调用器 ============
