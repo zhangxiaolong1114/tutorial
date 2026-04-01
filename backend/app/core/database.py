@@ -49,6 +49,27 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
+def ensure_schema_updates():
+    """
+    轻量迁移：为已存在库补充新增列（无 Alembic 时的兼容手段）。
+    """
+    from sqlalchemy import inspect, text
+
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        if "documents" not in tables:
+            return
+        cols = [c["name"] for c in inspector.get_columns("documents")]
+        if "pptx_path" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE documents ADD COLUMN pptx_path VARCHAR(500)"))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("ensure_schema_updates skipped: %s", e)
+
+
 def get_db():
     """
     获取数据库会话

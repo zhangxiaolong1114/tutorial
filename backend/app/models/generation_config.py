@@ -34,7 +34,7 @@ class GenerationConfig(Base):
     # === 受众与格式配置 ===
     # 目标受众: undergraduate(本科生), graduate(研究生), engineer(工程师), high_school(高中生)
     target_audience = Column(String(30), nullable=False, default="undergraduate")
-    # 输出格式: lecture(讲义), ppt_outline(PPT大纲), lab_manual(实验手册), cheatsheet(速查表)
+    # 输出格式: lecture(讲义), lab_manual(实验手册), cheatsheet(速查表)
     output_format = Column(String(20), nullable=False, default="lecture")
     # 代码语言: python, java, cpp, pseudocode(伪代码), none(无代码)
     code_language = Column(String(20), nullable=False, default="python")

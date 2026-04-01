@@ -73,6 +73,8 @@ class OutlineResponse(BaseModel):
     sections: list
     status: str
     created_at: str
+    config: Optional[dict] = None
+    output_format: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -328,6 +330,9 @@ def get_outline(
         )
 
     outline_data = outline.get_outline_data()
+    cfg = outline_data.get("config") or {}
+    root_fmt = outline_data.get("output_format")
+    eff_fmt = cfg.get("output_format") or root_fmt
     return {
         "id": outline.id,
         "user_id": outline.user_id,
@@ -337,7 +342,9 @@ def get_outline(
         "title": outline_data.get("title", f"{outline.course} - {outline.knowledge_point}"),
         "sections": outline_data.get("sections", []),
         "status": outline.status,
-        "created_at": format_datetime(outline.created_at)
+        "created_at": format_datetime(outline.created_at),
+        "config": cfg if cfg else None,
+        "output_format": eff_fmt,
     }
 
 

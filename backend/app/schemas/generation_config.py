@@ -83,7 +83,9 @@ class GenerationConfigBase(BaseModel):
     
     @validator('output_format')
     def validate_output_format(cls, v):
-        valid = ['lecture', 'ppt_outline', 'lab_manual', 'cheatsheet']
+        if v == 'ppt_outline':
+            v = 'lecture'
+        valid = ['lecture', 'lab_manual', 'cheatsheet']
         if v not in valid:
             raise ValueError(f'output_format must be one of {valid}')
         return v

@@ -139,7 +139,7 @@ def get_document(
         "title": document.title,
         "html_content": html_content,
         "sections": document.get_sections_data(),
-        "created_at": format_datetime(document.created_at)
+        "created_at": format_datetime(document.created_at),
     }
 
 
@@ -290,6 +290,8 @@ def delete_document(
     # 如果文件系统中有对应文件，先删除
     if document.file_path:
         file_storage_service.delete_document(document.file_path)
+    if getattr(document, "pptx_path", None):
+        file_storage_service.delete_document(document.pptx_path)
 
     db.delete(document)
     db.commit()

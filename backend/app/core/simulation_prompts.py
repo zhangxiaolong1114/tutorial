@@ -8,7 +8,8 @@ SIMULATION_CONSTRAINTS_LITE = """【代码约束】
 - 所有代码在 simulation-container 内，包括 style 和 script
 - script 用 IIFE 包裹：(function(){{...}})();
 - 处理边界值（除零、Infinity、NaN）
-- Canvas 尺寸 700x480px"""
+- Canvas 逻辑像素固定为 700×480（即 canvas.width=700、canvas.height=480）
+- 【布局】所有绘制必须落在 [0, canvas.width]×[0, canvas.height] 内。多子图纵向堆叠时**禁止**使用多行固定像素高度（如每行 150px）导致总高度超过 480；必须用 pad/gap 与行数动态计算行高：rowH = max(36, floor((canvas.height - padT - padB - gap*(rows-1)) / rows))，并保证最后一行 y+rowH ≤ canvas.height - padB"""
 
 
 def build_simulation_prompt_lite(
@@ -104,6 +105,7 @@ def build_simulation_prompt_structure(
 【要求】
 - 2-4个参数，对应公式中的变量
 - 样式美观专业，深色边框浅色背景
+- css 选择器须与宿主 DOM 一致：`.simulation-container`、`.title-desc`、`.data-panel`、`.metric`、`.control-panel`（勿使用与宿主不一致的 class 名，否则样式不生效）
 - 只返回 JSON，不要其他内容"""
 
 
@@ -138,7 +140,22 @@ def build_simulation_prompt_logic(
 【界面元素】
 - 数据面板元素ID: {param_ids}
 - 滑块元素ID: {control_ids}
-- Canvas ID: simCanvas (700x480)
+- Canvas ID: simCanvas（逻辑尺寸 700×480，与 canvas.width / canvas.height 一致）
+
+【画布布局（必须遵守，避免子图被裁切）】
+- 仅用 `canvas.width`、`canvas.height` 计算布局，勿写死超出 700×480 的累计高度。
+- 若有多行子图（波形/频谱上下排列）：设 `padT`/`padB`/`gap` 与行数 `rows`，令
+  `rowH = Math.max(36, Math.floor((canvas.height - padT - padB - gap * (rows - 1)) / rows))`，
+  第 r 行顶边 `y = padT + r * (rowH + gap)`，且必须满足 `y + rowH <= canvas.height - padB`。
+- 多列子图同理：各列 `x + w <= canvas.width`（预留左右边距）。
+- 标题与坐标轴文字画在各行子图矩形**内部**或紧挨上方，避免 `fillText` 的 y 使用负值超出画布上缘（可用 `Math.max(12, y - 2)` 等形式约束）。
+
+【输出格式（必须严格遵守）】
+1. 回复中只包含**一个** Markdown 代码块，且第一行必须是：```javascript（其后换行再写代码）。
+2. 代码块内从第一行起就是合法的可执行语句或函数声明；**禁止**从某函数体中间开始（例如禁止以 `ctx.fillText` 单独开头而无外层函数）。
+3. **禁止**在代码块后再输出 ```html、第二段 ```、或任何中文说明/列举/总结（代码即全部有效内容）。
+4. 宿主页面已用 IIFE 包裹并**已定义** `const canvas`、`const ctx`、`const controls` —— **不要**再写 `(function(){{...}})();` 包裹全文，**不要**重复 `const canvas` / `const ctx` / `const controls`。
+5. 字符串中若需字面量写出 `</script>`，请写成 `\\u003c/script\\u003e` 或 `'<\\\\/script>'`，避免打断 HTML 中的 script 标签。
 
 【输出代码】
 ```javascript

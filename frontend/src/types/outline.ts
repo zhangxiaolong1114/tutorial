@@ -20,6 +20,10 @@ export interface Outline {
   sections: Section[]
   status: 'draft' | 'generating' | 'completed'
   created_at: string
+  /** 生成配置（存于大纲 JSON，含 output_format 等） */
+  config?: Record<string, unknown>
+  /** 有效输出格式：根字段或 config 内 */
+  output_format?: string
 }
 
 import type { GenerationConfigCreate } from './generationConfig'

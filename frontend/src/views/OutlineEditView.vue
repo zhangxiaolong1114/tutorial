@@ -127,8 +127,13 @@
                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-medium" />
               
               <!-- 内容要点 -->
-              <textarea v-model="section.content" rows="4" placeholder="内容要点（每行一个）"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-y min-h-[80px]"></textarea>
+              <div>
+                <label class="text-xs text-gray-500 mb-1 block">内容要点（每行一条）</label>
+                <textarea v-model="section.content"
+                  rows="4"
+                  placeholder="内容要点（每行一个）"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-y block min-h-[80px]" />
+              </div>
               
               <!-- 前置依赖 -->
               <div class="bg-amber-50 rounded-lg p-3 border border-amber-200">
@@ -172,6 +177,7 @@ import { useRoute } from 'vue-router'
 import { getOutline, updateOutline, generateDocument, getTaskStatus } from '../api/outline'
 import ModelSelector from '../components/ModelSelector.vue'
 import type { Outline, Section, TaskStatusResponse } from '../types/outline'
+import type { GenerationConfigCreate, OutputFormat } from '../types/generationConfig'
 import type { ModelConfig } from '../api/aiModels'
 
 const route = useRoute()
@@ -213,24 +219,41 @@ const taskStatusText = computed(() => {
   }
 })
 
+/** 将后端章节 content 统一为编辑框用的多行字符串（数组每项一行，长行原样保留） */
+function sectionContentToText(content: unknown): string {
+  if (content == null) return ''
+  if (Array.isArray(content)) {
+    return content
+      .map((line) => {
+        if (typeof line === 'string') return line
+        if (line && typeof line === 'object') return JSON.stringify(line)
+        return String(line)
+      })
+      .join('\n')
+  }
+  if (typeof content === 'string') return content
+  return String(content)
+}
+
 // 加载大纲数据
 const loadOutline = async () => {
   try {
     outline.value = await getOutline(outlineId)
     sections.value = (outline.value.sections || []).map(s => ({
       ...s,
-      content: Array.isArray(s.content) ? s.content.join('\n') : s.content,
+      content: sectionContentToText(s.content),
       prerequisites: Array.isArray(s.prerequisites) ? s.prerequisites.join('\n') : s.prerequisites || '',
       prepares_for: Array.isArray(s.prepares_for) ? s.prepares_for.join('\n') : s.prepares_for || '',
       // key_formulas 可能是对象数组（包含 formula 和 used_in）或字符串数组
-      key_formulas: Array.isArray(s.key_formulas) 
-        ? s.key_formulas.map(item => {
-            if (typeof item === 'object' && item !== null) {
-              // 如果是对象，提取 formula 字段
-              return item.formula || JSON.stringify(item)
-            }
-            return item
-          }).join('\n')
+      key_formulas: Array.isArray(s.key_formulas)
+        ? s.key_formulas
+            .map(item => {
+              if (typeof item === 'object' && item !== null && 'formula' in item) {
+                return String((item as { formula?: string }).formula ?? JSON.stringify(item))
+              }
+              return String(item)
+            })
+            .join('\n')
         : s.key_formulas || ''
     }))
   } catch (error) {
@@ -273,12 +296,18 @@ const handleSave = async () => {
 
   isSaving.value = true
   try {
+    const lineSplit = (text: string) =>
+      text
+        .split(/\r?\n/)
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0)
+
     const sectionsToSave = sections.value.map(s => ({
       ...s,
-      content: s.content ? s.content.split('\n').filter(c => c.trim()) : [],
-      prerequisites: s.prerequisites ? s.prerequisites.split('\n').filter(c => c.trim()) : [],
-      prepares_for: s.prepares_for ? s.prepares_for.split('\n').filter(c => c.trim()) : [],
-      key_formulas: s.key_formulas ? s.key_formulas.split('\n').filter(c => c.trim()) : []
+      content: s.content ? lineSplit(s.content as string) : [],
+      prerequisites: s.prerequisites ? lineSplit(s.prerequisites as string) : [],
+      prepares_for: s.prepares_for ? lineSplit(s.prepares_for as string) : [],
+      key_formulas: s.key_formulas ? lineSplit(s.key_formulas as string) : []
     }))
     await updateOutline(outlineId, { sections: sectionsToSave })
     alert('保存成功')
@@ -375,7 +404,27 @@ const confirmGenerateDocument = async () => {
     )
 
     console.log('最终传递的配置:', hasModelConfig ? modelConfig.value : undefined)
-    const result = await generateDocument(outlineId, hasModelConfig ? modelConfig.value : undefined)
+    // 附带大纲中的生成配置（含 output_format），与文档生成任务一致
+    const genCfg = outline.value?.config as Partial<GenerationConfigCreate> | undefined
+    const rootFmt = outline.value?.output_format
+    const normFmt: OutputFormat | undefined =
+      rootFmt === 'ppt_outline' ? 'lecture' : (rootFmt as OutputFormat | undefined)
+    const mergedGen: Partial<GenerationConfigCreate> | undefined =
+      genCfg && Object.keys(genCfg).length > 0
+        ? {
+            ...genCfg,
+            ...(String(genCfg.output_format) === 'ppt_outline'
+              ? { output_format: 'lecture' as const }
+              : {}),
+          }
+        : normFmt
+          ? { output_format: normFmt }
+          : undefined
+    const result = await generateDocument(
+      outlineId,
+      hasModelConfig ? modelConfig.value : undefined,
+      mergedGen
+    )
 
     currentTask.value = <any>{
       task_id: result.task_id,

@@ -3,6 +3,17 @@ Prompt 模板配置
 分层 Prompt 工程 - 内容生成配置化
 """
 
+from typing import Any
+
+
+def _outline_formula_to_prompt_str(item: Any) -> str:
+    """大纲中 key_formulas 可能是字符串或 {formula, used_in} 对象。"""
+    if isinstance(item, dict):
+        v = item.get("formula") or item.get("latex") or item.get("text")
+        return str(v) if v is not None else str(item)
+    return str(item)
+
+
 # =============================================================================
 # 第一层：角色定义（风格层）
 # =============================================================================
@@ -494,25 +505,6 @@ OUTPUT_FORMAT_CONFIGS = {
         "structure_note": "章节完整，内容详细，包含所有教学环节",
         "special_sections": [],
         "format_hints": "每个章节内容要完整、连贯，适合连续阅读"
-    },
-    "ppt_outline": {
-        "name": "PPT大纲",
-        "description": "演示文稿大纲，适合制作幻灯片",
-        "structure_note": "每页PPT一个要点，强调视觉化和简洁性",
-        "special_sections": [
-            {
-                "id": "slides",
-                "title": "幻灯片设计",
-                "description": "每页PPT的内容要点和视觉设计建议",
-                "required": True,
-                "point_range": (6, 10)
-            }
-        ],
-        "format_hints": """PPT大纲特殊要求：
-- 每个要点要简洁，适合放在一页PPT上
-- 强调图表、示意图的建议
-- 标注动画或过渡效果建议
-- 演讲者备注要点"""
     },
     "lab_manual": {
         "name": "实验手册",
@@ -1175,6 +1167,7 @@ def build_section_prompt(
     code_language = config.get("code_language", "python")
     need_images = config.get("need_images", False)
     chapter_granularity = config.get("chapter_granularity", "standard")
+    output_format = config.get("output_format", "lecture")
     
     key_points_str = "\n".join([f"- {point}" for point in section_key_points])
     
@@ -1217,7 +1210,9 @@ def build_section_prompt(
 {prepares}""")
             
             if meta.get('key_formulas'):
-                formulas = "\n".join([f"- {f}" for f in meta['key_formulas']])
+                formulas = "\n".join(
+                    [f"- {_outline_formula_to_prompt_str(f)}" for f in meta['key_formulas']]
+                )
                 meta_parts.append(f"""**核心公式**（本章必须出现）：
 {formulas}""")
             
@@ -1253,7 +1248,8 @@ def build_section_prompt(
                 prev_formulas = prev_section.get('key_formulas', [])
                 formulas_str = ""
                 if prev_formulas:
-                    formulas_str = "\n  核心公式：" + "；".join(prev_formulas[:2])
+                    norm = [_outline_formula_to_prompt_str(f) for f in prev_formulas[:2]]
+                    formulas_str = "\n  核心公式：" + "；".join(norm)
                 
                 prev_parts.append(f"""**{prev_title}**：
 {content_str}{formulas_str}""")

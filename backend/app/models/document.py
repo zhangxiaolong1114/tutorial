@@ -24,6 +24,9 @@ class Document(Base):
     
     # 文件系统路径（当 STORAGE_TYPE=filesystem 时使用）
     file_path = Column(String(500), nullable=True, index=True)
+
+    # 历史字段：曾为 .pptx 相对路径；当前不再生成，删除文档时若存在则一并清理文件
+    pptx_path = Column(String(500), nullable=True, index=True)
     
     # 章节信息（JSON 格式，存储章节结构）
     sections = Column(Text, nullable=True)

@@ -1,6 +1,7 @@
 import api from './index'
 import type { Outline, GenerateOutlineRequest, UpdateOutlineRequest, TaskResponse, TaskStatusResponse } from '../types/outline'
 import type { ModelConfig } from './aiModels'
+import type { GenerationConfigCreate } from '../types/generationConfig'
 
 // 生成大纲（异步）
 export const generateOutline = async (data: GenerateOutlineRequest): Promise<TaskResponse> => {
@@ -18,11 +19,19 @@ export const updateOutline = async (id: string, data: UpdateOutlineRequest): Pro
 }
 
 // 生成文档（异步）
-export const generateDocument = async (id: string, modelConfig?: ModelConfig): Promise<TaskResponse> => {
-  const requestData: any = {}
+export const generateDocument = async (
+  id: string,
+  modelConfig?: ModelConfig,
+  generationConfig?: Partial<GenerationConfigCreate>
+): Promise<TaskResponse> => {
+  const requestData: Record<string, unknown> = {}
   // 只有当 modelConfig 有实际内容时才添加
   if (modelConfig && (modelConfig.outline_model_id || modelConfig.section_model_id || modelConfig.simulation_model_id)) {
     requestData.ai_model_config = modelConfig
+  }
+  // 传入大纲保存的生成配置（含 output_format），与大纲一致
+  if (generationConfig && Object.keys(generationConfig).length > 0) {
+    requestData.config = generationConfig
   }
   return api.post<TaskResponse>(`/outlines/${id}/generate-doc`, requestData)
 }

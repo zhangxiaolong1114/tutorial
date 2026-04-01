@@ -5,7 +5,7 @@ AI 服务封装（重构版）
 import json
 import logging
 import re
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 from app.core.config import get_settings
 from app.core.model_router import (
@@ -26,6 +26,7 @@ from app.services.simulation_generator import (
     generate_simulation_v2,
     SimulationGenerationError,
 )
+from app.services.simulation_assembly import assemble_simulation_html
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -248,8 +249,9 @@ class AIService:
             task_config: 任务级别的模型配置
         """
         logger.info(f"[AI Service] Task {task_id} - 开始生成大纲: {course} - {knowledge_point}")
-        
-        prompt = build_outline_prompt(course, knowledge_point, config)
+        # 大纲统一按「讲义」结构生成（与文档输出格式 lab_manual / cheatsheet 等无关）
+        prompt_cfg = {**(config or {}), "output_format": "lecture"}
+        prompt = build_outline_prompt(course, knowledge_point, prompt_cfg)
         
         messages = [
             {"role": "system", "content": "你是一个专业的教育内容设计师，擅长生成结构化的教学大纲。严格遵守输出格式要求。"},
@@ -266,22 +268,15 @@ class AIService:
         )
         logger.info(f"[AI Service] Task {task_id} - 大纲生成完成，日志: {log_file}")
         
-        # 解析 JSON
+        parsed = self._parse_outline_json_response(content)
+        if parsed is None:
+            logger.error(f"[AI Service] Task {task_id} - 大纲 JSON 解析失败，已使用默认讲义大纲")
+            return self._get_default_outline(course, knowledge_point)
+        
         try:
-            content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
-            outline = json.loads(content)
-            outline = self._validate_and_clean_outline(outline)
-            return outline
-        except json.JSONDecodeError as e:
-            logger.error(f"[AI Service] Task {task_id} - 大纲 JSON 解析失败: {e}")
+            return self._validate_and_clean_outline(parsed, course=course, knowledge_point=knowledge_point)
+        except Exception as e:
+            logger.error(f"[AI Service] Task {task_id} - 大纲结构校验失败: {e}", exc_info=True)
             return self._get_default_outline(course, knowledge_point)
     
     def generate_section(
@@ -335,20 +330,27 @@ class AIService:
         task_config: Optional[TaskModelConfig] = None,
         context: dict = None,
         use_chunked: bool = True,
-        use_v2: bool = True,  # 新增：使用V2版本
+            use_v2: bool = True,  # 有 context 时走结构化管线（见 _generate_simulation_structured）
     ) -> str:
         """
         生成交互仿真代码
         
         Args:
-            use_chunked: 是否使用分块生成（默认True，更快更稳定）
-            use_v2: 是否使用V2版本（默认True，需求优先的Prompt）
+            use_chunked: 无 context 或关闭 v2 时，是否使用分块生成（结构+逻辑+模板组装）
+            use_v2: 为 True 且传入 context 时，优先使用结构化两阶段管线（无续写拼接）；失败则回退分块生成
         """
-        # 优先使用V2版本
+        # 优先：结构化两阶段管线（JSON + JS + 模板组装，无续写拼接）
         if use_v2 and context:
-            return self._generate_simulation_v2(
-                simulation_desc, course, knowledge_point,
-                config, task_id, model_id, task_config, context
+            return self._generate_simulation_structured(
+                simulation_desc,
+                course,
+                knowledge_point,
+                simulation_types,
+                config,
+                task_id,
+                model_id,
+                task_config,
+                context,
             )
         
         if use_chunked:
@@ -362,6 +364,81 @@ class AIService:
                 simulation_types, config, task_id, model_id, task_config, context
             )
     
+    def _generate_simulation_structured(
+        self,
+        simulation_desc: str,
+        course: str,
+        knowledge_point: str,
+        simulation_types: list,
+        config: dict,
+        task_id: str,
+        model_id: Optional[str],
+        task_config: Optional[TaskModelConfig],
+        context: dict,
+    ) -> str:
+        """结构化两阶段生成；失败时返回含大纲全文的占位 HTML（详见 structured_simulation.log）。"""
+        import traceback
+
+        from app.services.structured_simulation_pipeline import (
+            StructuredSimulationFailed,
+            build_structured_failure_placeholder,
+            run_structured_simulation,
+        )
+
+        try:
+            return run_structured_simulation(
+                simulation_desc=simulation_desc,
+                course=course,
+                knowledge_point=knowledge_point,
+                simulation_types=simulation_types,
+                task_id=task_id,
+                model_id=model_id,
+                task_config=task_config,
+                context=context,
+            )
+        except StructuredSimulationFailed as e:
+            logger.warning(
+                "[Simulation] Task %s - 结构化管线失败 [%s]: %s（已输出大纲占位块，见 logs/structured_simulation.log）",
+                task_id,
+                getattr(e, "stage", ""),
+                e.reason,
+            )
+            ph = build_structured_failure_placeholder(
+                simulation_desc=simulation_desc,
+                course=course,
+                knowledge_point=knowledge_point,
+                context=context,
+                failure_reason=e.reason,
+                stage=getattr(e, "stage", "") or "",
+                detail=getattr(e, "detail", "") or "",
+                task_id=str(task_id),
+            )
+            logger.info(
+                "[Simulation] Task %s - 占位 HTML 长度=%s",
+                task_id,
+                len(ph),
+            )
+            return ph
+        except Exception as e:
+            logger.error(
+                "[Simulation] Task %s - 结构化管线未捕获异常: %s",
+                task_id,
+                e,
+                exc_info=True,
+            )
+            ph = build_structured_failure_placeholder(
+                simulation_desc=simulation_desc,
+                course=course,
+                knowledge_point=knowledge_point,
+                context=context,
+                failure_reason=str(e),
+                stage="unexpected",
+                detail=traceback.format_exc()[:4000],
+                task_id=str(task_id),
+            )
+            logger.info("[Simulation] Task %s - 异常占位 HTML 长度=%s", task_id, len(ph))
+            return ph
+
     def _generate_simulation_v2(
         self,
         simulation_desc: str,
@@ -374,7 +451,8 @@ class AIService:
         context: dict,
     ) -> str:
         """
-        使用V2版本生成仿真（需求优先 + 续生成机制）
+        使用 V2 版本生成仿真（需求优先 + 续生成机制，多轮合并 HTML）。
+        默认入口已改为 `_generate_simulation_structured`；保留供显式调用或调试。
         """
         logger.info(f"[Simulation V2] Task {task_id} - 开始生成")
         
@@ -548,7 +626,7 @@ class AIService:
         
         # ===== 拼接完整仿真 =====
         try:
-            simulation_html = self._assemble_simulation(structure_json, js_code)
+            simulation_html = assemble_simulation_html(structure_json, js_code)
             logger.info(f"[Simulation] Task {task_id} - 分块生成完成，HTML长度: {len(simulation_html)}")
             
             # 验证生成的HTML是否完整
@@ -634,105 +712,14 @@ class AIService:
         return None
     
     def _extract_javascript(self, text: str) -> str:
-        """从文本中提取JavaScript代码"""
-        import re
-        
-        # 查找代码块
-        js_match = re.search(r'```(?:javascript|js)?\s*([\s\S]*?)\s*```', text)
-        if js_match:
-            return js_match.group(1).strip()
-        
-        # 如果没有代码块标记，返回清理后的文本
-        return text.strip()
+        """从文本中提取 JavaScript（与结构化管线共用稳健提取逻辑）。"""
+        from app.services.simulation_js_utils import extract_javascript_robust
+
+        return extract_javascript_robust(text)
     
     def _assemble_simulation(self, structure: dict, js_code: str) -> str:
-        """拼接结构和逻辑生成完整仿真"""
-        
-        # 构建数据面板HTML
-        data_metrics_html = ""
-        for metric in structure.get("data_metrics", []):
-            unit = metric.get("unit", "")
-            unit_html = f'<span class="unit">{unit}</span>' if unit else ""
-            data_metrics_html += f'''
-    <div class="metric">
-      <span class="label">{metric.get("label", "")}:</span>
-      <span class="value" id="{metric.get("id", "")}">0</span>{unit_html}
-    </div>'''
-        
-        # 构建控件HTML
-        controls_html = ""
-        slider_ids = []
-        button_ids = []
-        for ctrl in structure.get("controls", []):
-            ctrl_id = ctrl.get("id", "")
-            if ctrl.get("type") == "slider":
-                slider_ids.append(ctrl_id)
-                display_id = ctrl_id.replace("Slider", "Display").replace("slider", "Display")
-                controls_html += f'''
-    <label>{ctrl.get("label", "")}: <span id="{display_id}">{ctrl.get("value", 0)}</span></label>
-    <input type="range" id="{ctrl_id}" min="{ctrl.get("min", 0)}" max="{ctrl.get("max", 100)}" step="{ctrl.get("step", 1)}" value="{ctrl.get("value", 0)}">'''
-            elif ctrl.get("type") == "button":
-                button_ids.append(ctrl_id)
-                controls_html += f'''
-    <button id="{ctrl_id}">{ctrl.get("label", "")}</button>'''
-        
-        # 生成控件ID列表用于JS引用检查
-        all_control_ids = slider_ids + button_ids
-        control_ids_js = ", ".join([f'"{cid}"' for cid in all_control_ids])
-        
-        # 组装完整HTML，添加错误处理和控件引用
-        html = f'''<div class="simulation-container">
-  <div class="title-desc">
-    <h2>{structure.get("title", "仿真")}</h2>
-    <p>{structure.get("description", "")}</p>
-  </div>
-  
-  <div class="data-panel">{data_metrics_html}
-  </div>
-  
-  <canvas id="simCanvas" width="700" height="480"></canvas>
-  
-  <div class="control-panel">{controls_html}
-  </div>
-  
-  <style>
-{structure.get("css", "")}
-  </style>
-  
-  <script>
-(function() {{
-  'use strict';
-  
-  // 错误处理
-  window.onerror = function(msg, url, line) {{
-    console.error('[Simulation Error]', msg, 'at line', line);
-    return true;
-  }};
-  
-  // 获取Canvas
-  const canvas = document.getElementById('simCanvas');
-  if (!canvas) {{
-    console.error('Canvas not found');
-    return;
-  }}
-  const ctx = canvas.getContext('2d');
-  
-  // 获取控件引用
-  const controls = {{}};
-  [{control_ids_js}].forEach(function(id) {{
-    const el = document.getElementById(id);
-    if (el) controls[id] = el;
-    else console.warn('Control not found:', id);
-  }});
-  
-  // 用户代码开始
-{js_code}
-  // 用户代码结束
-}})();
-  </script>
-</div>'''
-        
-        return html
+        """拼接结构和逻辑生成完整仿真（委托 simulation_assembly）。"""
+        return assemble_simulation_html(structure, js_code)
     
     def get_available_models(self, task_type: Optional[str] = None) -> list:
         """获取可用模型列表"""
@@ -848,34 +835,161 @@ class AIService:
         
         return html
     
-    def _validate_and_clean_outline(self, outline: dict) -> dict:
-        """验证并清理大纲数据"""
-        if not outline.get("sections"):
+    @staticmethod
+    def _strip_outline_json_fences(raw: str) -> str:
+        text = raw.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        return text.strip()
+
+    def _parse_outline_json_response(self, raw: str) -> Optional[Any]:
+        """
+        解析模型返回的大纲：先去 fence 再 json.loads，失败则尝试从全文提取 JSON。
+        """
+        stripped = self._strip_outline_json_fences(raw)
+        if not stripped:
+            return None
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+        extracted = self._extract_json(raw)
+        if extracted is not None:
+            return extracted
+        return None
+
+    @staticmethod
+    def _normalize_key_formulas_list(val: Any) -> List[str]:
+        """将 key_formulas 统一为字符串列表（兼容 {formula, used_in} 对象数组）。"""
+        if val is None:
+            return []
+        if isinstance(val, str):
+            return [val] if val.strip() else []
+        if not isinstance(val, list):
+            return [str(val)]
+        out: List[str] = []
+        for item in val:
+            if isinstance(item, dict):
+                f = item.get("formula") or item.get("latex") or item.get("text")
+                if f is not None:
+                    out.append(str(f))
+                else:
+                    out.append(json.dumps(item, ensure_ascii=False))
+            else:
+                out.append(str(item))
+        return out
+
+    @staticmethod
+    def _normalize_content_list(val: Any) -> List[str]:
+        if val is None:
+            return []
+        if isinstance(val, str):
+            s = val.strip()
+            return [s] if s else []
+        if isinstance(val, list):
+            lines: List[str] = []
+            for x in val:
+                if isinstance(x, dict):
+                    lines.append(json.dumps(x, ensure_ascii=False))
+                else:
+                    lines.append(str(x).strip() if str(x).strip() else str(x))
+            return [x for x in lines if x]
+        return [str(val)]
+
+    def _coerce_outline_root(
+        self,
+        parsed: Any,
+        course: str,
+        knowledge_point: str,
+    ) -> dict:
+        """顶层可能是 dict、或误把 sections 当成根数组；支持 {\"outline\": {...}} 包装。"""
+        if isinstance(parsed, list):
+            return {
+                "title": f"{course} - {knowledge_point}",
+                "output_format": "lecture",
+                "sections": parsed,
+            }
+        if not isinstance(parsed, dict):
+            raise TypeError(f"大纲根类型无效: {type(parsed).__name__}")
+        root = dict(parsed)
+        inner = root.get("outline")
+        if isinstance(inner, dict) and isinstance(inner.get("sections"), list):
+            merged = dict(inner)
+            for k in ("title", "output_format"):
+                if k in root and root[k] is not None:
+                    merged[k] = root[k]
+            root = merged
+        if not isinstance(root.get("sections"), list):
+            root["sections"] = []
+        return root
+
+    def _normalize_outline_section(self, section: Any, index: int) -> dict:
+        if not isinstance(section, dict):
+            return {
+                "id": f"section_{index}",
+                "title": f"章节 {index + 1}",
+                "content": self._normalize_content_list(section),
+                "prerequisites": [],
+                "prepares_for": [],
+                "key_formulas": [],
+            }
+        sec = dict(section)
+        sec["id"] = (sec.get("id") or f"section_{index}").strip() or f"section_{index}"
+        sec["title"] = (sec.get("title") or f"章节 {index + 1}").strip() or f"章节 {index + 1}"
+        sec["content"] = self._normalize_content_list(sec.get("content"))
+        for key in ("prerequisites", "prepares_for"):
+            v = sec.get(key)
+            if v is None:
+                sec[key] = []
+            elif isinstance(v, list):
+                sec[key] = [str(x) for x in v]
+            else:
+                sec[key] = [str(v)]
+        sec["key_formulas"] = self._normalize_key_formulas_list(sec.get("key_formulas"))
+        return sec
+
+    def _validate_and_clean_outline(
+        self,
+        outline: Any,
+        course: str = "",
+        knowledge_point: str = "",
+    ) -> dict:
+        """验证并清理大纲（讲义结构）：兼容公式对象数组、顶层数组等。"""
+        outline = self._coerce_outline_root(outline, course, knowledge_point)
+        sections_raw = outline.get("sections")
+        if not isinstance(sections_raw, list):
             outline["sections"] = []
-        
+        else:
+            outline["sections"] = [
+                self._normalize_outline_section(s, i) for i, s in enumerate(sections_raw)
+            ]
         for i, section in enumerate(outline["sections"]):
             section["order"] = i + 1
-            if not section.get("id"):
-                section["id"] = f"section_{i}"
-            if not section.get("title"):
-                section["title"] = f"章节 {i + 1}"
-            if not section.get("content"):
-                section["content"] = []
-        
+        if not outline.get("title") and course and knowledge_point:
+            outline["title"] = f"{course} - {knowledge_point}"
+        elif not outline.get("title"):
+            outline["title"] = "教学大纲"
+        outline["output_format"] = "lecture"
         return outline
-    
+
     def _get_default_outline(self, course: str, knowledge_point: str) -> dict:
-        """获取默认大纲"""
+        """解析失败时的兜底讲义大纲。"""
+        title = f"{course} - {knowledge_point}"
         return {
-            "title": f"{course} - {knowledge_point}",
+            "title": title,
+            "output_format": "lecture",
             "sections": [
                 {"id": "concept", "title": "知识点概念", "content": ["核心定义", "基本公式", "物理意义"], "order": 1},
                 {"id": "explanation", "title": "详细讲解", "content": ["原理分析", "数学推导", "实例说明"], "order": 2},
                 {"id": "difficulties", "title": "重难点分析", "content": ["常见难点", "易错点", "解题技巧"], "order": 3},
                 {"id": "simulation", "title": "交互仿真", "content": ["参数调节演示", "动态模拟"], "order": 4},
                 {"id": "summary", "title": "总结", "content": ["核心要点", "适用条件", "常见误区"], "order": 5},
-                {"id": "exercises", "title": "习题与答案", "content": ["基础练习", "进阶练习", "详细解答"], "order": 6}
-            ]
+                {"id": "exercises", "title": "习题与答案", "content": ["基础练习", "进阶练习", "详细解答"], "order": 6},
+            ],
         }
 
     def _fix_math_formulas(self, html: str) -> str:

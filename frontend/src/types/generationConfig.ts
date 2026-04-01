@@ -19,7 +19,7 @@ export type FormulaDetail = 'conclusion_only' | 'derivation' | 'full_proof'
 export type TargetAudience = 'undergraduate' | 'graduate' | 'engineer' | 'high_school'
 
 // 输出格式
-export type OutputFormat = 'lecture' | 'ppt_outline' | 'lab_manual' | 'cheatsheet'
+export type OutputFormat = 'lecture' | 'lab_manual' | 'cheatsheet'
 
 // 代码语言
 export type CodeLanguage = 'python' | 'java' | 'cpp' | 'pseudocode' | 'none'
@@ -133,7 +133,6 @@ export const configLabels = {
   },
   output_format: {
     lecture: '讲义',
-    ppt_outline: 'PPT大纲',
     lab_manual: '实验手册',
     cheatsheet: '速查表'
   },

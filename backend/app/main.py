@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.logging_config import setup_logging
 from app.api import auth, outline, document, generation_config, ai_models, costs
-from app.core.database import engine, Base
+from app.core.database import engine, Base, ensure_schema_updates
 from app.services.task_queue_service import task_queue_service
 
 # 首先配置日志
@@ -19,6 +19,7 @@ settings = get_settings()
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
+ensure_schema_updates()
 
 
 @asynccontextmanager

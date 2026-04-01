@@ -24,6 +24,22 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+def _merge_generation_config(outline_data: dict, task_params: dict) -> dict:
+    """
+    合并文档生成用配置：任务 params 覆盖大纲中保存的 config。
+    大纲 JSON 常在根节点含 output_format（与 AI 返回格式一致），若 config 内未带则补全。
+    """
+    base = dict(outline_data.get("config") or {})
+    override = dict(task_params.get("config") or {})
+    merged = {**base, **override}
+    root_fmt = outline_data.get("output_format")
+    if root_fmt and not merged.get("output_format"):
+        merged["output_format"] = root_fmt
+    if merged.get("output_format") == "ppt_outline":
+        merged["output_format"] = "lecture"
+    return merged
+
+
 class TaskExecutionError(Exception):
     """任务执行错误"""
     def __init__(self, message: str, error_type: str = None, details: dict = None):
@@ -321,8 +337,14 @@ class TaskQueueService:
             )
             
             if config:
-                outline_data["config"] = config
-            
+                outline_data["config"] = dict(config)
+                # 与 AI 返回的 JSON 根字段对齐：根上常有 output_format
+                if outline_data.get("output_format") and not outline_data["config"].get("output_format"):
+                    outline_data["config"]["output_format"] = outline_data["output_format"]
+            elif outline_data.get("output_format"):
+                # 无用户 config 时仍保存根上的 output_format
+                outline_data["config"] = {"output_format": outline_data["output_format"]}
+
             outline.set_outline_data(outline_data)
             db.add(outline)
             db.commit()
@@ -381,11 +403,14 @@ class TaskQueueService:
         outline_data = outline.get_outline_data()
         sections = outline_data.get("sections", [])
         
-        # 获取配置
-        config = params.get("config") or outline_data.get("config")
+        # 获取配置（合并大纲内保存的 config、根上 output_format、以及本次任务传入的覆盖项）
+        config = _merge_generation_config(outline_data, params)
         model_config = params.get("model_config", {})
         log_context.warning(f"model_config: {model_config}")
-        logger.info(f"[Task {task.id}] 文档生成参数: params keys={list(params.keys())}, model_config={model_config}")
+        logger.info(
+            f"[Task {task.id}] 文档生成参数: params keys={list(params.keys())}, "
+            f"output_format={config.get('output_format')}, model_config={model_config}"
+        )
         
         # 获取模型配置
         section_model_id = model_config.get("section_model_id")
@@ -394,6 +419,7 @@ class TaskQueueService:
         log_context.info("文档生成配置",
                         section_count=len(sections),
                         has_config=bool(config),
+                        output_format=config.get("output_format"),
                         model_config=model_config,
                         section_model_id=section_model_id or "default",
                         simulation_model_id=simulation_model_id or "default")
@@ -511,6 +537,7 @@ class TaskQueueService:
             except Exception as e:
                 log_context.exception(f"章节 {section_id} 生成异常")
                 # 添加错误占位
+                _is_sim = section_id == "simulation" or "仿真" in (section_title or "")
                 error_html = f'<div class="warning"><strong>章节生成失败</strong><p>{section_title}</p><p>{str(e)[:200]}</p></div>'
                 html_contents.append(f"<section id='{section_id}'>{error_html}</section>")
                 generated_sections.append({
@@ -518,7 +545,7 @@ class TaskQueueService:
                     "title": section_title,
                     "generated": False,
                     "error": str(e),
-                    "model_used": (simulation_model_id if is_simulation else section_model_id) or "kimi-k2.5 (default)"
+                    "model_used": (simulation_model_id if _is_sim else section_model_id) or "kimi-k2.5 (default)"
                 })
         
         # 合并内容
@@ -554,7 +581,7 @@ class TaskQueueService:
         except Exception as e:
             log_context.exception("保存文档失败")
             raise TaskExecutionError(f"保存文档失败: {str(e)}", error_type="save_failed")
-        
+
         # 更新任务
         task.resource_id = document.id
         task.resource_type = "document"
@@ -731,67 +758,61 @@ class TaskQueueService:
                         }
                 
                 else:
-                    # 普通章节 - 临时使用占位符，跳过AI生成
-                    logger.info(f"[Task {task_id}] 普通章节使用占位符跳过: {section_title}")
-                    
-                    # 构建简单的占位符内容
-                    content_list = section_content if isinstance(section_content, list) else [str(section_content)]
-                    content_html = "\n".join([f"<p>{point}</p>" for point in content_list])
-                    
-                    placeholder_html = f'''<div class="section-content">
-<h3>{section_title}</h3>
-<div class="content-placeholder" style="border: 2px dashed #9ca3af; border-radius: 8px; padding: 20px; margin: 15px 0; background: #f9fafb;">
-    <p style="color: #6b7280; margin-bottom: 12px;">📄 内容大纲：</p>
-    {content_html}
-    <p style="color: #9ca3af; margin-top: 12px; font-size: 0.9em;">（详细内容生成中...）</p>
-</div>
-</div>'''
-                    
-                    return {
-                        'html': f"<section id='{section_id}'>{placeholder_html}</section>",
-                        'content': placeholder_html,
-                        'meta': {
-                            "id": section_id,
-                            "title": section_title,
-                            "generated": True,
-                            "error": None,
-                            "type": "content",
-                            "retry_count": 0,
-                            "model_used": "placeholder"
-                        }
-                    }
-                    
-                    # 以下代码暂时不执行（保留用于恢复真实生成）
-                    if False:  # 占位符，永远不会执行
+                    # 普通章节：调用 AI 生成 HTML
+                    logger.info(f"[Task {task_id}] 普通章节 AI 生成: {section_title}")
+                    key_points = (
+                        section_content
+                        if isinstance(section_content, list)
+                        else [str(section_content)]
+                    )
+                    html_content = ai_service.generate_section(
+                        section_title=section_title,
+                        section_key_points=key_points,
+                        course=outline.course,
+                        knowledge_point=outline.knowledge_point,
+                        config=config or {},
+                        task_id=f"{task_id}_{section_id}",
+                        model_id=section_model_id,
+                        task_config=None,
+                        context=context,
+                    )
+                    has_error = (
+                        not (html_content or "").strip()
+                        or len((html_content or "").strip()) < 80
+                        or "生成失败" in html_content
+                        or "内容生成失败" in html_content
+                    )
+                    if not has_error:
                         return {
-                            'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
-                            'content': html_content,
-                            'meta': {
+                            "html": f"<section id='{section_id}'>\n{html_content}\n</section>",
+                            "content": html_content,
+                            "meta": {
                                 "id": section_id,
                                 "title": section_title,
                                 "generated": True,
                                 "error": None,
                                 "type": "content",
                                 "retry_count": attempt,
-                                "model_used": section_model_id or "kimi-k2.5 (default)"
-                            }
+                                "model_used": section_model_id or "kimi-k2.5 (default)",
+                            },
                         }
-                    elif attempt < max_retries:
+                    if attempt < max_retries:
                         import time
-                        time.sleep(2 ** attempt)
+
+                        time.sleep(2**attempt)
                     else:
                         return {
-                            'html': f"<section id='{section_id}'>\n{html_content}\n</section>",
-                            'content': html_content,
-                            'meta': {
+                            "html": f"<section id='{section_id}'>\n{html_content}\n</section>",
+                            "content": html_content,
+                            "meta": {
                                 "id": section_id,
                                 "title": section_title,
                                 "generated": False,
-                                "error": "AI生成返回失败内容（重试耗尽）",
+                                "error": "AI 生成内容过短或疑似失败（重试耗尽）",
                                 "type": "content",
                                 "retry_count": attempt,
-                                "model_used": section_model_id or "kimi-k2.5 (default)"
-                            }
+                                "model_used": section_model_id or "kimi-k2.5 (default)",
+                            },
                         }
                         
             except Exception as e:
